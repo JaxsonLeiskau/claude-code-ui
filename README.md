@@ -5,7 +5,7 @@
 # Claude Code UI
 
 **A clean, claude.ai-style desktop app for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview).**
-All your past Claude Code sessions in a sidebar, claude.ai-style Projects with shared memory, live tool output, and one-click permissions — no terminal required.
+All your Claude Code sessions in a sidebar, claude.ai-style Projects with shared memory, sync between your computers, and chats or debates with ChatGPT, Gemini and your own Open WebUI model.
 
 [**Download**](../../releases/latest) · [Features](#features) · [Build from source](#build-from-source) · [How it works](#how-it-works)
 
@@ -18,6 +18,9 @@ All your past Claude Code sessions in a sidebar, claude.ai-style Projects with s
 
 ## Features
 
+- **Sync between computers** — sign in with GitHub on each computer and your chats, projects and memory stay the same everywhere, stored in a private repository in your own account. Start a chat on your desktop and continue it on your laptop.
+- **Other AI models** — chat with your own **Open WebUI** model (e.g. on a home server, reachable from anywhere over Tailscale), **ChatGPT** or **Gemini**, right next to your Claude Code chats.
+- **Debate mode** (optional, off by default) — ask Claude, ChatGPT and Gemini together. They answer separately, review each other's answers, and a moderator writes the consensus, noting anything they still disagree on.
 - **Projects, like on claude.ai** — give a project instructions, reference files and a working folder, and every chat in it shares them. Claude keeps a **shared project memory** (decisions, preferences, key facts) up to date after each chat, and can search the full text of the project's earlier chats when it needs more detail. Every folder you've used Claude Code in shows up as a project automatically.
 - **Your whole history, organized** — reads the transcripts Claude Code already saves in `~/.claude/projects`, so chats you started in the terminal show up too. Grouped into Today / Yesterday / Previous 7 days, with a **Projects** list of every folder you've used, plus **Starred** chats.
 - **Search** across chat titles and the full text of every message (`Ctrl/⌘+K`).
@@ -30,6 +33,8 @@ All your past Claude Code sessions in a sidebar, claude.ai-style Projects with s
 - Works with `claude --resume`: every chat has a **Copy resume command** to continue it in the terminal.
 
 <img src="docs/screenshot-project.png" alt="A project page with instructions, memory and files" width="860">
+
+<img src="docs/screenshot-debate.png" alt="A debate between Claude, ChatGPT and Gemini with the consensus answer" width="860">
 
 <table>
 <tr>
@@ -56,6 +61,34 @@ All your past Claude Code sessions in a sidebar, claude.ai-style Projects with s
 
 **Updates install themselves.** The app checks GitHub for new versions; on Windows and Linux it downloads them in the background and a **Restart to update** button appears at the bottom of the sidebar (or the update installs the next time you quit). On Mac the button opens the download page, since only code-signed Mac apps can update themselves. You can also use **File → Check for Updates…**
 
+## Set up sync between computers
+
+In the app: **Settings → Sync**. It walks you through it:
+
+1. **Create a private repository** for your chats (once — e.g. `claude-code-sync`). Keep it private; your chats are stored there.
+2. **Create a token for each computer** — a fine-grained GitHub token with access to *only* that repository and *Contents: Read and write*. The app's link pre-fills everything except picking the repository.
+3. **Paste it in and sign in.** The first sync merges what's on this computer with what's already there.
+
+After that it syncs every few minutes and after each reply; there's also **Sync now**.
+
+- **Synced:** Claude Code chats, chats with other models, debates, chat names/stars, projects (instructions, memory, files).
+- **Not synced:** the files Claude edits in your project folders (use git for code), API keys, and app settings.
+- **Continuing on another computer:** if the chat's folder doesn't exist there, the app asks which folder to use.
+- **Same chat on two computers at once:** both versions are kept — the other one appears as "(copy from other device)".
+- **Deleting** a chat or project on one computer deletes it everywhere (it goes to `~/.claude-code-ui/trash`).
+
+## Add other AI models
+
+**Settings → AI models.** Press **Connect** after entering details to check them and pick a model.
+
+- **Your Open WebUI model:** its address (use the server's Tailscale name or IP so it works away from home, e.g. `http://homelab:3000`) and an API key from Open WebUI's *Settings → Account → API keys*. An admin has to enable API keys first under *Admin settings → Authentication*.
+- **ChatGPT:** an API key from [platform.openai.com/api-keys](https://platform.openai.com/api-keys). Billed per use by OpenAI; a ChatGPT Plus subscription doesn't include API access.
+- **Gemini:** an API key from [Google AI Studio](https://aistudio.google.com/apikey).
+
+Then pick who answers from the menu in the message box. Keys stay on that computer.
+
+**Debate mode** is off until you turn it on in **Settings → Debate**, where you also choose who takes part, the number of rounds and the moderator. Claude takes part through your Claude Code plan (with tools turned off); ChatGPT and Gemini use their API keys. A 3-model, 2-round debate makes 7 requests per question.
+
 ## Build from source
 
 Requires [Node.js](https://nodejs.org) 18 or newer.
@@ -67,7 +100,7 @@ npm install
 npm start          # run the desktop app
 npm run dist       # build an installer for your OS into ./dist
 npm run web        # or: use it in your browser at http://localhost:3456
-npm test           # smoke test (doesn't need Claude Code installed)
+npm test           # tests (no Claude Code, GitHub or API keys needed)
 ```
 
 On Windows you can also double-click `start.bat`, which installs on first run and then opens the app.
@@ -93,6 +126,8 @@ If you run from source, `git pull` gets the latest code.
 - The server only listens on `127.0.0.1` and rejects requests from other hosts or websites, since it can run Claude with tool access.
 - Headless mode can't pause to ask for approval mid-task, so tool permissions are chosen up front (or granted afterwards with **Allow & continue**).
 - **Projects** live in `~/.claude-code-ui/projects/<id>/` (`files/`, `memory.md`, and `chats/` with plain-text copies of the project's chats). The first message of each project chat carries the instructions, memory, small text files inline, and a list of earlier chats; the folder is shared with Claude via `--add-dir` so it can read the rest. After each reply, a short background Claude call folds anything worth keeping into `memory.md`.
+- **Sync** (`sync.js`) talks to the GitHub API directly (no git needed): it compares each file with what both sides looked like at the last sync, pulls the other computers' changes, and pushes this one's as a single commit.
+- **Other models** (`ai.js`) use the OpenAI-compatible chat API that OpenAI, Gemini and Open WebUI all offer, with streaming. Those chats are stored in `~/.claude-code-ui/chats/`.
 - The server and UI are plain Node and vanilla JavaScript with no dependencies. The desktop app adds Electron and `electron-updater`.
 
 ### Options
@@ -122,9 +157,11 @@ Environment variables, mostly useful with `npm run web`:
 
 ```
 server.js            local API, projects, runs the claude CLI
+ai.js                Open WebUI / ChatGPT / Gemini chats and debate mode
+sync.js              sync between computers through a private GitHub repo
 electron/main.js     desktop window, menu, auto-updates, PATH fix-up
 public/              the UI (index.html, app.js, style.css, md.js)
-scripts/             smoke test
+scripts/             tests (with fake GitHub, AI APIs and claude CLI)
 build/icon.png       app icon
 .github/workflows/   CI and installer builds
 ```

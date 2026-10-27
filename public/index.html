@@ -49,7 +49,7 @@
       <button class="update-btn" id="updateBtn" hidden><span data-i="download"></span><span class="label" id="updateLabel">Restart to update</span></button>
       <button class="profile" id="settingsBtn" title="Settings">
         <span class="avatar" id="avatar">?</span>
-        <span class="label profile-text"><span class="name" id="profileName">You</span><span class="sub" id="cliVersion">Claude Code</span></span>
+        <span class="label profile-text"><span class="name" id="profileName">You</span><span class="sub" id="cliVersion">Claude Code</span></span><span class="sync-badge" id="syncBadge" hidden></span>
         <span class="label ico-wrap muted" data-i="settings"></span>
       </button>
     </div>
@@ -96,13 +96,9 @@
             </label>
           </div>
           <div class="comp-right">
-            <label class="pill select ghost" title="Model">
-              <select id="modelSel">
-                <option value="">Default model</option>
-                <option value="opus">Opus</option>
-                <option value="sonnet">Sonnet</option>
-                <option value="haiku">Haiku</option>
-              </select>
+            <label class="pill select ghost" title="Who answers">
+              <span class="mode-ico" id="modeIco"></span>
+              <select id="modelSel"></select>
               <span data-i="chevron"></span>
             </label>
             <button type="submit" class="send" id="sendBtn" title="Send (Enter)" data-i="arrowUp" disabled></button>

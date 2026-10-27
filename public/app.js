@@ -58,12 +58,13 @@ const store = {
   set(k, v) { try { localStorage.setItem('ccui.' + k, JSON.stringify(v)); } catch {} },
 };
 const S = {
-  info: null, sessions: [], projects: [], runs: [], loaded: false, app: null,
+  info: null, sessions: [], projects: [], runs: [], loaded: false, app: null, ai: null, sync: null,
   filterProject: null, query: '', searchHits: null, showAllProjects: false,
   view: null, viewToken: 0,
   settings: Object.assign({ theme: 'system', name: '', model: '', perm: 'acceptEdits', cwd: '' }, store.get('settings', {})),
   allowed: store.get('allowed', {}),
 };
+if (S.settings.model !== 'debate' && !/^(claude|model):/.test(S.settings.model || '')) S.settings.model = 'claude:' + (S.settings.model || '');
 const saveSettings = () => store.set('settings', S.settings);
 
 async function api(url, opts = {}) {
@@ -71,7 +72,7 @@ async function api(url, opts = {}) {
   if (opts.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
   const r = await fetch(url, init);
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || r.statusText);
+  if (!r.ok) throw Object.assign(new Error(j.error || r.statusText), { code: j.code, cwd: j.cwd });
   return j;
 }
 
@@ -160,7 +161,7 @@ function chatItem(s, running) {
   el.className = 'sb-chat' + (S.view && S.view.id === s.id ? ' active' : '');
   el.dataset.id = s.id;
   el.title = `${s.title}\n${homeify(s.cwd)}`;
-  el.innerHTML = `${running ? `<span class="running-dot">${I.spinner}</span>` : ''}<span class="t">${esc(s.title)}</span><span class="proj-tag">${esc(projectName(s.projectId) || baseName(s.cwd))}</span><button class="more" title="More">${I.dots}</button>`;
+  el.innerHTML = `${running ? `<span class="running-dot">${I.spinner}</span>` : ''}<span class="t">${esc(s.title)}</span><span class="proj-tag">${esc(projectName(s.projectId) || s.speaker || baseName(s.cwd))}</span><button class="more" title="More">${I.dots}</button>`;
   el.addEventListener('click', e => {
     if (e.target.closest('.more')) return;
     go(s.id);
@@ -313,32 +314,149 @@ function deleteDialog(id, title) {
   };
 }
 
-function settingsDialog() {
+/* ---------------- modes: Claude Code, other models, debate ---------------- */
+const AV_COLORS = { Claude: '#c96442', ChatGPT: '#3f8f6b', Gemini: '#4a6fd1', Debate: '#8a6bbf' };
+function avatar(name) {
+  const color = AV_COLORS[name] || '#8a6bbf';
+  return `<span class="av" style="background:${color}">${esc((name || '?').trim()[0].toUpperCase())}</span>`;
+}
+async function loadAi() {
+  try { S.ai = await api('/api/ai'); } catch { S.ai = null; }
+  renderComposerState();
+}
+function modeLabel(mode) {
+  if (mode === 'debate') return 'Debate';
+  if (mode.startsWith('model:')) {
+    const id = mode.slice(6);
+    const p = S.ai && (S.ai.available || []).find(x => x.id === id);
+    return p ? p.name : id === 'openwebui' ? 'My model' : id === 'openai' ? 'ChatGPT' : id === 'gemini' ? 'Gemini' : id;
+  }
+  const m = mode.slice(7);
+  return m ? `Claude Code · ${m[0].toUpperCase() + m.slice(1)}` : 'Claude Code';
+}
+// An existing chat keeps its kind: Claude Code chats can switch Claude models, other chats can't change
+function lockedMode() {
+  const v = S.view;
+  if (!v || !v.id) return null;
+  if (v.kind === 'model') return 'model:' + v.provider;
+  if (v.kind === 'debate') return 'debate';
+  return 'claude';
+}
+function currentMode() {
+  const lock = lockedMode();
+  if (lock === 'claude') return (S.view.claudeModel && S.view.claudeModel.startsWith('claude:')) ? S.view.claudeModel : (S.settings.model.startsWith('claude:') ? S.settings.model : 'claude:');
+  if (lock) return lock;
+  const m = S.settings.model || 'claude:';
+  if (m === 'debate' && !(S.ai && S.ai.debateEnabled)) return 'claude:';
+  if (m.startsWith('model:') && !(S.ai && (S.ai.available || []).some(p => 'model:' + p.id === m))) return 'claude:';
+  return m;
+}
+function buildModeOptions() {
+  const sel = $('#modelSel');
+  const lock = lockedMode();
+  const opt = (v, l) => `<option value="${esc(v)}">${esc(l)}</option>`;
+  let h = `<optgroup label="Claude Code">${opt('claude:', 'Claude Code')}${opt('claude:opus', 'Opus')}${opt('claude:sonnet', 'Sonnet')}${opt('claude:haiku', 'Haiku')}</optgroup>`;
+  const avail = (S.ai && S.ai.available) || [];
+  if (lock !== 'claude') {
+    if (avail.length) h += `<optgroup label="Chat with">${avail.map(p => opt('model:' + p.id, p.name)).join('')}</optgroup>`;
+    if (S.ai && S.ai.debateEnabled) h += `<optgroup label="Debate">${opt('debate', 'Debate: ' + (S.ai.debateParticipants || []).map(p => p.name).join(', '))}</optgroup>`;
+    if (lock && !sel.innerHTML.includes(lock)) h += opt(lock, modeLabel(lock));
+  }
+  if (lock && lock !== 'claude') h = opt(lock, modeLabel(lock));
+  if (sel.dataset.h !== h) { sel.innerHTML = h; sel.dataset.h = h; }
+  const mode = currentMode();
+  sel.value = mode;
+  sel.disabled = !!(lock && lock !== 'claude');
+  sel.closest('.pill').title = sel.disabled ? 'This chat always uses ' + modeLabel(mode) : 'Who answers';
+  const ico = $('#modeIco');
+  const name = mode.startsWith('claude:') ? '' : mode === 'debate' ? 'Debate' : modeLabel(mode);
+  ico.innerHTML = name ? avatar(name) : '';
+}
+
+function renderDebate(b, t, idx) {
+  const el = document.createElement('div');
+  const key = `deb:${S.view.id}:${idx}`;
+  const open = debOpen.has(key) ? debOpen.get(key) : !!t.live;
+  el.className = 'debate' + (open ? ' open' : '');
+  const n = (b.rounds || []).length;
+  el.innerHTML = `<button class="debate-head" type="button"><span class="avs">${(b.participants || []).map(avatar).join('')}</span>
+    <span class="dh-title">${esc((b.participants || []).join(', '))}</span><span class="dh-sub">${n} round${n === 1 ? '' : 's'}</span><span class="chev">${I.chevron}</span></button>`;
+  el.firstChild.onclick = () => { debOpen.set(key, !open); el.replaceWith(renderDebate(b, t, idx)); };
+  if (open) {
+    const body = document.createElement('div'); body.className = 'debate-body';
+    (b.rounds || []).forEach((round, r) => {
+      body.insertAdjacentHTML('beforeend', `<div class="round-label">Round ${r + 1} · ${r === 0 ? 'First answers' : 'Reviews and revised answers'}</div>`);
+      round.forEach(e => {
+        const k = `${key}:${r}:${e.speaker}`;
+        const eo = debOpen.get(k) || false;
+        const row = document.createElement('div');
+        row.className = `deb-entry ${e.status}${eo ? ' open' : ''}`;
+        const preview = (e.error || e.text || '').replace(/^\s*[-*>#]+\s*/gm, '').replace(/[*_`#]/g, '').replace(/\s+/g, ' ').trim().slice(0, 140);
+        const stat = e.status === 'writing' ? `<span class="spin">${I.spinner}</span>` : e.status === 'error' ? `<span class="err">${I.alert}</span>` : `<span class="ok">${I.check}</span>`;
+        row.innerHTML = `<button class="de-head" type="button">${avatar(e.speaker)}<span class="de-name">${esc(e.speaker)}</span><span class="de-prev">${esc(e.status === 'writing' && !preview ? 'Thinking…' : preview)}</span>${stat}<span class="chev">${I.chevron}</span></button>`;
+        if (eo) row.insertAdjacentHTML('beforeend', e.error ? `<pre class="de-err">${esc(e.error)}</pre>` : `<div class="prose de-body">${window.renderMarkdown(e.text || '')}</div>`);
+        row.firstChild.onclick = () => { debOpen.set(k, !eo); debOpen.set(key, true); el.replaceWith(renderDebate(b, t, idx)); };
+        body.appendChild(row);
+      });
+    });
+    el.appendChild(body);
+  }
+  return el;
+}
+const debOpen = new Map();
+
+/* ---------------- settings ---------------- */
+function settingsDialog(tab = 'general') {
   const st = S.settings;
   const m = modal({
     title: 'Settings',
     wide: true,
     body: `
-      <label class="field"><span>What should Claude call you?</span><input class="input" id="setName" value="${esc(st.name)}" placeholder="${esc((S.info && S.info.user) || '')}"></label>
-      <div class="field"><span>Appearance</span><div class="seg" id="setTheme">
-        ${['system', 'light', 'dark'].map(t => `<button data-v="${t}" class="${st.theme === t ? 'on' : ''}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}
-      </div></div>
-      <label class="field"><span>Default folder for new chats</span>
-        <div class="input-row"><input class="input" id="setCwd" value="${esc(st.cwd)}" style="font-family:var(--mono);font-size:13px"><button class="btn" id="setBrowse">Browse</button></div>
-      </label>
-      <div class="input-row">
-        <label class="field" style="flex:1"><span>Default model</span><select class="input" id="setModel">${$('#modelSel').innerHTML}</select></label>
-        <label class="field" style="flex:1"><span>Default permissions</span><select class="input" id="setPerm">${$('#permSel').innerHTML}</select></label>
+      <div class="tabs" id="setTabs">${[['general', 'General'], ['ai', 'AI models'], ['debate', 'Debate'], ['sync', 'Sync']].map(([k, l]) => `<button data-tab="${k}">${l}</button>`).join('')}</div>
+      <div class="tab" data-pane="general">
+        <label class="field"><span>What should Claude call you?</span><input class="input" id="setName" value="${esc(st.name)}" placeholder="${esc((S.info && S.info.user) || '')}"></label>
+        <div class="field"><span>Appearance</span><div class="seg" id="setTheme">
+          ${['system', 'light', 'dark'].map(t => `<button data-v="${t}" class="${st.theme === t ? 'on' : ''}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}
+        </div></div>
+        <label class="field"><span>Default folder for new chats</span>
+          <div class="input-row"><input class="input mono" id="setCwd" value="${esc(st.cwd)}"><button class="btn" id="setBrowse">Browse</button></div>
+        </label>
+        <label class="field"><span>Default permissions for Claude Code</span><select class="input" id="setPerm">${$('#permSel').innerHTML}</select></label>
+        <div class="about">
+          ${S.app && S.app.desktop ? `App version: <code>${esc(S.app.version || '')}</code> · updates install automatically<br>` : ''}
+          Claude Code CLI: <code>${esc((S.info && S.info.version) || 'not found')}</code><br>
+          Sessions are read from <code>${esc(homeify(S.info && S.info.projectsDir))}</code><br>
+          Keyboard: <code>Enter</code> send · <code>Shift+Enter</code> new line · <code>${isMac ? '⌘' : 'Ctrl'}+K</code> search · <code>${isMac ? '⌘' : 'Ctrl'}+Shift+O</code> new chat · <code>Esc</code> stop
+        </div>
       </div>
-      <div class="about">
-        ${S.app && S.app.desktop ? `App version: <code>${esc(S.app.version || '')}</code> · updates install automatically<br>` : ''}
-        Claude Code CLI: <code>${esc((S.info && S.info.version) || 'not found')}</code><br>
-        Sessions are read from <code>${esc(homeify(S.info && S.info.projectsDir))}</code><br>
-        Keyboard: <code>Enter</code> send · <code>Shift+Enter</code> new line · <code>${isMac ? '⌘' : 'Ctrl'}+K</code> search · <code>${isMac ? '⌘' : 'Ctrl'}+Shift+O</code> new chat · <code>Esc</code> stop
-      </div>`,
+      <div class="tab" data-pane="ai">
+        <p class="hint">Chat with these straight from the message box. Keys are stored only on this computer and aren't synced.</p>
+        ${providerCard('openwebui', 'Your Open WebUI model', `<label class="field"><span>Name to show</span><input class="input" data-f="label" placeholder="My model"></label>
+          <label class="field"><span>Open WebUI address</span><input class="input mono" data-f="url" placeholder="http://homelab:3000"><small>Use its Tailscale name or IP so it works away from home.</small></label>
+          <label class="field"><span>API key</span><input class="input mono" data-f="key" placeholder="sk-…" autocomplete="off"><small>In Open WebUI: Settings → Account → API keys. An admin has to turn on API keys first (Admin settings → Authentication).</small></label>`)}
+        ${providerCard('openai', 'ChatGPT (OpenAI)', `<label class="field"><span>API key</span><input class="input mono" data-f="key" placeholder="sk-…" autocomplete="off"><small>From <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com/api-keys</a>. Billed per use by OpenAI; a ChatGPT Plus subscription doesn't include it.</small></label>`)}
+        ${providerCard('gemini', 'Gemini (Google)', `<label class="field"><span>API key</span><input class="input mono" data-f="key" placeholder="AIza…" autocomplete="off"><small>From <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>.</small></label>`)}
+      </div>
+      <div class="tab" data-pane="debate">
+        <label class="switch-row"><span><strong>Debate mode</strong><small>Ask several AIs at once. They answer separately, review each other's answers, and a moderator writes the agreed answer.</small></span><input type="checkbox" class="switch" id="debOn"></label>
+        <div id="debOpts">
+          <div class="field"><span>Who takes part</span><div class="checks" id="debWho"></div><small>ChatGPT and Gemini need their keys in AI models. Claude uses your Claude Code plan.</small></div>
+          <div class="input-row">
+            <label class="field" style="flex:1"><span>Rounds</span><select class="input" id="debRounds"><option value="1">1 · answers only</option><option value="2">2 · answer, then review</option><option value="3">3 · two rounds of review</option></select></label>
+            <label class="field" style="flex:1"><span>Moderator</span><select class="input" id="debMod"><option value="claude">Claude</option><option value="openai">ChatGPT</option><option value="gemini">Gemini</option></select></label>
+            <label class="field" style="flex:1"><span>Claude model</span><select class="input" id="debClaude"><option value="sonnet">Sonnet</option><option value="opus">Opus</option><option value="haiku">Haiku</option></select></label>
+          </div>
+          <small class="muted-note">Each question goes to every model once per round, plus once to the moderator — so a 3-model, 2-round debate is 7 requests. It uses more of your plan and API credit than a normal message.</small>
+        </div>
+      </div>
+      <div class="tab" data-pane="sync"><div id="syncPane"></div></div>`,
     foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="setSave">Save</button>`,
   });
-  $('#setModel', m.el).value = st.model;
+  const show = k => { $$('#setTabs button', m.el).forEach(b => b.classList.toggle('on', b.dataset.tab === k)); $$('.tab', m.el).forEach(p => { p.hidden = p.dataset.pane !== k; }); };
+  $$('#setTabs button', m.el).forEach(b => b.onclick = () => show(b.dataset.tab));
+  show(tab);
+
+  // general
   $('#setPerm', m.el).value = st.perm;
   let theme = st.theme;
   $$('#setTheme button', m.el).forEach(b => b.onclick = () => {
@@ -347,18 +465,64 @@ function settingsDialog() {
   });
   $('#setBrowse', m.el).onclick = () => folderPicker($('#setCwd', m.el).value, p => { $('#setCwd', m.el).value = p; });
   const origTheme = st.theme;
-  const cancel = () => { S.settings.theme = origTheme; applyTheme(); };
-  $$('[data-close]', m.el).forEach(b => b.addEventListener('click', cancel));
-  $('#setSave', m.el).onclick = () => {
-    Object.assign(S.settings, {
-      name: $('#setName', m.el).value.trim(), theme, cwd: $('#setCwd', m.el).value.trim(),
-      model: $('#setModel', m.el).value, perm: $('#setPerm', m.el).value,
-    });
-    saveSettings(); m.close();
-    $('#modelSel').value = S.settings.model; $('#permSel').value = S.settings.perm;
+  $$('[data-close]', m.el).forEach(b => b.addEventListener('click', () => { S.settings.theme = origTheme; applyTheme(); }));
+
+  // AI + debate
+  const a = S.ai || { openwebui: {}, openai: {}, gemini: {}, debate: { participants: [], rounds: 2, moderator: 'claude', claudeModel: 'sonnet' } };
+  for (const id of ['openwebui', 'openai', 'gemini']) {
+    const card = $(`[data-prov="${id}"]`, m.el);
+    $$('[data-f]', card).forEach(i => { i.value = (a[id] && a[id][i.dataset.f]) || ''; });
+    const msel = $('[data-f="model"]', card);
+    if (a[id] && a[id].model) msel.innerHTML = `<option>${esc(a[id].model)}</option>`;
+    $('[data-load]', card).onclick = async () => {
+      const btn = $('[data-load]', card); btn.disabled = true; btn.textContent = 'Checking…';
+      const body = { provider: id };
+      $$('[data-f]', card).forEach(i => { if (i.dataset.f !== 'model') body[i.dataset.f] = i.value.trim(); });
+      try {
+        const r = await api('/api/ai/models', { method: 'POST', body });
+        const cur = msel.value;
+        msel.innerHTML = r.models.map(x => `<option value="${esc(x.id)}">${esc(x.name ? `${x.name} (${x.id})` : x.id)}</option>`).join('');
+        msel.value = r.models.some(x => x.id === cur) ? cur : r.suggested;
+        $('.pc-status', card).innerHTML = `<span class="ok">${I.check} Connected · ${r.models.length} model${r.models.length === 1 ? '' : 's'}</span>`;
+      } catch (e) { $('.pc-status', card).innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+      btn.disabled = false; btn.textContent = 'Connect';
+    };
+    $('[data-clear]', card).onclick = () => { $$('[data-f]', card).forEach(i => { if (i.dataset.f !== 'label') i.value = ''; }); msel.innerHTML = ''; $('.pc-status', card).textContent = 'Will be removed when you save'; };
+  }
+  $('#debOn', m.el).checked = !!a.debateEnabled;
+  const who = a.debate.participants || [];
+  $('#debWho', m.el).innerHTML = [['claude', 'Claude'], ['openai', 'ChatGPT'], ['gemini', 'Gemini']].map(([k, l]) => `<label class="check"><input type="checkbox" value="${k}" ${who.includes(k) ? 'checked' : ''}> ${l}</label>`).join('');
+  $('#debRounds', m.el).value = String(a.debate.rounds || 2);
+  $('#debMod', m.el).value = a.debate.moderator || 'claude';
+  $('#debClaude', m.el).value = a.debate.claudeModel || 'sonnet';
+  const syncDeb = () => { $('#debOpts', m.el).classList.toggle('disabled', !$('#debOn', m.el).checked); };
+  $('#debOn', m.el).onchange = syncDeb; syncDeb();
+
+  renderSyncPane($('#syncPane', m.el));
+
+  $('#setSave', m.el).onclick = async () => {
+    Object.assign(S.settings, { name: $('#setName', m.el).value.trim(), theme, cwd: $('#setCwd', m.el).value.trim(), perm: $('#setPerm', m.el).value });
+    saveSettings();
+    const body = { debateEnabled: $('#debOn', m.el).checked, debate: {
+      participants: $$('#debWho input:checked', m.el).map(i => i.value), rounds: +$('#debRounds', m.el).value,
+      moderator: $('#debMod', m.el).value, claudeModel: $('#debClaude', m.el).value } };
+    for (const id of ['openwebui', 'openai', 'gemini']) {
+      const card = $(`[data-prov="${id}"]`, m.el); body[id] = {};
+      $$('[data-f]', card).forEach(i => { body[id][i.dataset.f] = i.value.trim(); });
+    }
+    try { S.ai = await api('/api/ai', { method: 'PATCH', body }); } catch (e) { toast(e.message); return; }
+    if (body.debateEnabled && (S.ai.debateParticipants || []).length < 2) toast('Debate needs at least two models with keys — add ChatGPT or Gemini');
+    m.close();
+    $('#permSel').value = S.settings.perm;
     updateProfile(); renderComposerState(); $('#greeting').textContent = greeting();
     if (S.view && !S.view.id && !S.view.turns.length) { S.view.cwd = S.settings.cwd || S.view.cwd; renderComposerState(); }
   };
+}
+function providerCard(id, title, fields) {
+  return `<section class="prov" data-prov="${id}"><div class="prov-head">${avatar(id === 'openai' ? 'ChatGPT' : id === 'gemini' ? 'Gemini' : 'My model')}<h3>${esc(title)}</h3><span class="pc-status"></span></div>
+    ${fields}
+    <div class="input-row"><label class="field" style="flex:1"><span>Model</span><select class="input" data-f="model"></select></label>
+      <button class="btn" data-load type="button" style="align-self:flex-end">Connect</button><button class="btn" data-clear type="button" style="align-self:flex-end" title="Remove">${I.trash}</button></div></section>`;
 }
 
 function folderPicker(start, onPick) {
@@ -430,7 +594,7 @@ function newChat(cwd) {
 async function openSession(id) {
   const token = ++S.viewToken;
   const s = S.sessions.find(x => x.id === id);
-  S.view = { mode: 'chat', id, cwd: s ? s.cwd : '', title: s ? s.title : 'Loading…', turns: [], runId: null, live: null, pinned: s ? s.pinned : false, projectId: s ? s.projectId : null, loading: true };
+  S.view = { mode: 'chat', id, cwd: s ? s.cwd : '', title: s ? s.title : 'Loading…', turns: [], runId: null, live: null, pinned: s ? s.pinned : false, projectId: s ? s.projectId : null, kind: s ? s.kind : null, provider: s ? s.provider : null, loading: true };
   renderAll();
   let d;
   try { d = await api(`/api/sessions/${id}`); }
@@ -442,7 +606,7 @@ async function openSession(id) {
     toast(e.message); go(null); return;
   }
   if (token !== S.viewToken) return;
-  Object.assign(S.view, { cwd: d.session.cwd, title: d.session.title, pinned: d.session.pinned, projectId: d.session.projectId, turns: d.turns, loading: false });
+  Object.assign(S.view, { cwd: d.session.cwd, title: d.session.title, pinned: d.session.pinned, projectId: d.session.projectId, kind: d.session.kind || 'claude', provider: d.session.provider || null, turns: d.turns, loading: false });
   renderAll();
   scrollToBottom(true);
   if (d.run) attach(d.run.id, token);
@@ -508,6 +672,18 @@ function handleEvent(ev) {
       break;
     }
     case 'claude': handleClaude(ev.data); break;
+    case 'start': {
+      if (ev.appChat && !v.kind) { v.kind = ev.appChat.kind; v.provider = ev.appChat.provider; }
+      break;
+    }
+    case 'snapshot': {
+      const t = liveTurn();
+      t.blocks = ev.turn.blocks || [];
+      t.speaker = ev.turn.speaker;
+      t.errorText = ev.turn.errorText;
+      if (ev.turn.result) t.result = ev.turn.result;
+      break;
+    }
     case 'stderr': v.stderr = ((v.stderr || '') + ev.text).slice(-4000); break;
     case 'error': v.turns.push({ role: 'notice', kind: 'error', text: ev.text }); markDirty(v.turns.length - 1); break;
     case 'exit': {
@@ -517,10 +693,10 @@ function handleEvent(ev) {
         t.live = false;
         t.blocks = t.blocks.filter(b => !(b.draft && !b.text));
         t.blocks.forEach(b => { b.draft = false; if (b.type === 'tool' && b.status === 'running') b.status = ev.stopped ? 'error' : 'done'; });
-        if (!t.blocks.length && !t.result && !t.denials) v.turns.splice(v.turns.indexOf(t), 1);
+        if (!t.blocks.length && !t.result && !t.denials && !t.errorText) v.turns.splice(v.turns.indexOf(t), 1);
       }
       if (ev.stopped) v.turns.push({ role: 'notice', text: 'Stopped' });
-      else if (ev.code && !(t && t.result)) {
+      else if (ev.code && !(t && (t.result || t.errorText))) {
         const tail = (v.stderr || '').trim().split('\n').slice(-8).join('\n');
         if (!v.turns.some(x => x.role === 'notice' && x.kind === 'error' && x.fromRun === true))
           v.turns.push({ role: 'notice', kind: 'error', fromRun: true, text: `Claude Code exited with code ${ev.code}.`, detail: tail });
@@ -640,8 +816,15 @@ function renderTurn(t, idx) {
   }
   // assistant
   const wrap = document.createElement('div');
+  if (t.speaker) wrap.insertAdjacentHTML('beforeend', `<div class="speaker">${avatar(t.speaker)}<span>${esc(t.speaker)}</span></div>`);
   let toolGroup = null;
+  let prev = null;
   for (const b of t.blocks) {
+    if (b.type === 'debate') { wrap.appendChild(renderDebate(b, t, idx)); prev = b; continue; }
+    if (b.type === 'text' && prev && prev.type === 'debate') {
+      wrap.insertAdjacentHTML('beforeend', `<div class="speaker consensus">${I.check}<span>Consensus</span><small>moderated by ${esc(prev.moderator || '')}</small></div>`);
+    }
+    prev = b;
     if (b.type === 'tool') {
       if (!toolGroup) { toolGroup = document.createElement('div'); toolGroup.className = 'tools'; wrap.appendChild(toolGroup); }
       toolGroup.appendChild(renderTool(b));
@@ -688,6 +871,8 @@ function renderThinking(b, t) {
 }
 
 function workingLabel(t) {
+  const deb = t.blocks.find(b => b.type === 'debate');
+  if (deb) return deb.phase === 'consensus' ? `${deb.moderator} is writing the consensus…` : deb.rounds.length > 1 ? `Round ${deb.rounds.length}: reviewing each other's answers…` : 'Everyone is answering…';
   const last = t.blocks[t.blocks.length - 1];
   if (!last) return 'Thinking…';
   if (last.type === 'tool' && last.status === 'running') {
@@ -805,7 +990,7 @@ function renderHeader() {
   crumb.hidden = !proj;
   if (proj) { crumb.innerHTML = `${proj.virtual ? I.folder : I.box}<span>${esc(proj.name)}</span><span class="sep">/</span>`; crumb.title = `Open ${proj.name}`; }
   const chip = $('#cwdChip');
-  chip.textContent = v && v.id && v.cwd && !isProj ? homeify(v.cwd) : '';
+  chip.textContent = v && v.id && !isProj ? (v.kind === 'debate' ? 'Debate' : v.kind === 'model' ? modeLabel('model:' + v.provider) : v.cwd ? homeify(v.cwd) : '') : '';
   chip.title = v ? v.cwd : '';
   const sb = $('#starBtn');
   sb.hidden = !(v && v.id);
@@ -827,7 +1012,13 @@ function renderComposerState() {
   fb.title = locked ? `Working in ${v.cwd}` : 'Choose working folder';
   $('#folderLabel').textContent = v ? (baseName(v.cwd) || homeify(v.cwd) || 'Choose folder') : '';
   $('#permSel').closest('.pill').classList.toggle('perm-bypass', $('#permSel').value === 'bypassPermissions');
-  $('#input').placeholder = v && v.mode === 'project' ? `Start a chat in ${v.project ? v.project.name : 'this project'}…` : v && v.turns.length ? 'Reply to Claude…' : 'How can I help you today?';
+  buildModeOptions();
+  const mode = currentMode();
+  const claudeMode = mode.startsWith('claude:');
+  $('#composer').classList.toggle('nonclaude', !claudeMode);
+  const who = claudeMode ? 'Claude' : mode === 'debate' ? 'the panel' : modeLabel(mode);
+  $('#input').placeholder = v && v.mode === 'project' ? `Start a chat in ${v.project ? v.project.name : 'this project'}…`
+    : v && v.turns.length ? `Reply to ${who}…` : claudeMode ? 'How can I help you today?' : mode === 'debate' ? 'Ask Claude, ChatGPT and Gemini to debate…' : `Message ${who}…`;
 }
 
 function updateEmpty() {
@@ -1106,31 +1297,125 @@ async function installUpdate() {
   try { await api('/api/app/install-update', { method: 'POST' }); toast('Updating…'); } catch (e) { toast(e.message); }
 }
 
+
+/* ---------------- sync between devices ---------------- */
+async function loadSync() {
+  let st;
+  try { st = await api('/api/sync'); } catch { return; }
+  const prev = S.sync;
+  S.sync = st;
+  renderSyncBadge();
+  if (prev && st.lastSync !== prev.lastSync && st.lastDown) refreshSessions();
+  const pane = document.getElementById('syncPane');
+  if (pane && !pane.contains(document.activeElement)) renderSyncPane(pane);
+}
+function renderSyncBadge() {
+  const st = S.sync, el = $('#syncBadge');
+  if (!el) return;
+  el.hidden = !st || !st.connected;
+  if (!st || !st.connected) return;
+  el.className = 'sync-badge ' + (st.state === 'error' ? 'err' : st.running ? 'busy' : '');
+  el.title = st.state === 'error' ? `Sync problem: ${st.error}` : st.running ? 'Syncing…' : `Synced ${st.lastSync ? ago(st.lastSync) : '—'} · ${st.repo}`;
+}
+function renderSyncPane(pane) {
+  const st = S.sync || { connected: false };
+  if (!st.connected) {
+    const repoUrl = 'https://github.com/new?name=claude-code-sync&visibility=private&description=' + encodeURIComponent('Chats synced by Claude Code UI (keep private)');
+    const tokUrl = 'https://github.com/settings/personal-access-tokens/new?name=' + encodeURIComponent(`Claude Code UI (${st.device || 'device'})`).slice(0, 120) +
+      '&description=' + encodeURIComponent('Lets Claude Code UI sync chats to a private repository') + '&expires_in=none&contents=write';
+    pane.innerHTML = `
+      <p class="hint">Sign in with GitHub to keep your chats, projects and memory the same on every computer you use. Everything goes to a <strong>private repository</strong> in your own GitHub account. Do these steps once per computer (step 1 only the first time).</p>
+      <ol class="steps">
+        <li><strong>Create a private repository</strong> for your chats. <a href="${repoUrl}" target="_blank" rel="noopener">Create it on GitHub</a> — keep it <em>Private</em>. On your other computers, skip this and use the same one.</li>
+        <li><strong>Create a sign-in token</strong> for this computer. <a href="${tokUrl}" target="_blank" rel="noopener">Open the token page</a> — under <em>Repository access</em> choose <em>Only select repositories</em> and pick your chats repository, then click <em>Generate token</em> and copy it.</li>
+        <li><strong>Paste it here:</strong></li>
+      </ol>
+      <label class="field"><span>Repository</span><input class="input mono" id="syRepo" placeholder="claude-code-sync" value="claude-code-sync"></label>
+      <label class="field"><span>Token</span><input class="input mono" id="syTok" placeholder="github_pat_…" autocomplete="off" type="password"></label>
+      <div class="row-end"><span class="sy-msg" id="syMsg"></span><button class="btn accent" id="syGo">Sign in & sync</button></div>
+      <small class="muted-note">The token is saved only on this computer and can only reach that one repository. Your API keys for other AI models are never synced.</small>`;
+    $('#syGo', pane).onclick = async () => {
+      const b = $('#syGo', pane); b.disabled = true; b.textContent = 'Signing in…'; $('#syMsg', pane).textContent = '';
+      try {
+        S.sync = await api('/api/sync/connect', { method: 'POST', body: { token: $('#syTok', pane).value, repo: $('#syRepo', pane).value } });
+        toast('Signed in — chats are syncing'); renderSyncPane(pane); renderSyncBadge(); refreshSessions();
+      } catch (e) { $('#syMsg', pane).textContent = e.message; b.disabled = false; b.textContent = 'Sign in & sync'; }
+    };
+    return;
+  }
+  const when = st.lastSync ? `Last synced ${ago(st.lastSync)}${st.lastChanges ? ` · ${st.lastUp || 0} sent, ${st.lastDown || 0} received` : ' · everything up to date'}` : 'Not synced yet';
+  pane.innerHTML = `
+    <div class="sy-card">
+      <div class="sy-row">${I.check}<div><strong>Signed in as @${esc(st.user)}</strong><small>Syncing with <a href="https://github.com/${esc(st.repo)}" target="_blank" rel="noopener">${esc(st.repo)}</a> · this computer is “${esc(st.device)}”</small></div></div>
+      <div class="sy-status ${st.state === 'error' ? 'err' : ''}">${st.running ? 'Syncing…' : st.state === 'error' ? esc(st.error) : esc(when)}</div>
+      <div class="row-end"><button class="btn" id="syOut">Sign out</button><button class="btn primary" id="syNow" ${st.running ? 'disabled' : ''}>Sync now</button></div>
+    </div>
+    <p class="hint">Syncs automatically every few minutes and after each reply. What syncs: Claude Code chats, chats with other models, debates, chat names and stars, and projects with their instructions, memory and files. What doesn't: the files Claude edits in your folders (use git for code), API keys and app settings.</p>
+    <p class="hint">If the same chat gets new messages on two computers before they sync, you'll see both: the other version appears as a separate chat marked “(copy from other device)”.</p>
+    ${st.conflicts ? `<p class="hint">${st.conflicts} other item${st.conflicts > 1 ? 's were' : ' was'} edited on two computers at once; the older version is saved in <code>${esc(homeify(((S.info && S.info.appDir) || '~/.claude-code-ui')))}/conflicts</code>.</p>` : ''}`;
+  $('#syNow', pane).onclick = async () => {
+    $('#syNow', pane).disabled = true; $('.sy-status', pane).textContent = 'Syncing…';
+    try { S.sync = await api('/api/sync/now', { method: 'POST' }); refreshSessions(); }
+    catch (e) { S.sync = (e.status) || S.sync; toast(e.message); await loadSync(); }
+    renderSyncPane(pane); renderSyncBadge();
+  };
+  $('#syOut', pane).onclick = async () => {
+    if (!confirm('Stop syncing this computer? Your chats stay here and in the repository.')) return;
+    S.sync = await api('/api/sync/disconnect', { method: 'POST' }); renderSyncPane(pane); renderSyncBadge();
+  };
+}
 /* ---------------- sending ---------------- */
 async function send(text) {
   text = (text || '').trim();
   const v = S.view;
   if (!text || !v || v.runId) return;
-  if (!v.cwd) { toast('Pick a folder for Claude to work in first'); folderPicker('', p => { v.cwd = p; renderComposerState(); }); return; }
+  const mode = currentMode();
+  const isClaude = mode.startsWith('claude:');
+  if (isClaude && !v.cwd) { toast('Pick a folder for Claude to work in first'); folderPicker('', p => { v.cwd = p; renderComposerState(); }); return; }
   const token = S.viewToken;
   const input = $('#input');
   input.value = ''; autoGrow(); renderComposerState();
   try {
     const r = await api('/api/chat', {
       method: 'POST',
-      body: { sessionId: v.id, projectId: !v.id && v.mode === 'project' ? v.projectId : undefined, prompt: text, cwd: v.cwd, model: $('#modelSel').value, permissionMode: $('#permSel').value, allowedTools: S.allowed[v.id || 'new'] || [] },
+      body: {
+        sessionId: v.id, projectId: !v.id && v.mode === 'project' ? v.projectId : undefined, prompt: text, cwd: v.cwd,
+        kind: isClaude ? 'claude' : mode === 'debate' ? 'debate' : 'model', provider: mode.startsWith('model:') ? mode.slice(6) : undefined,
+        model: isClaude ? mode.slice(7) : undefined, permissionMode: $('#permSel').value, allowedTools: S.allowed[v.id || 'new'] || [],
+      },
     });
     if (token !== S.viewToken) return;
+    if (r.sessionId && !v.id) {
+      v.id = r.sessionId; v.kind = mode === 'debate' ? 'debate' : 'model'; v.provider = mode.startsWith('model:') ? mode.slice(6) : null; v.cwd = null;
+      history.replaceState(null, '', `#/c/${v.id}`); renderHeader();
+    }
     if (v.mode === 'project') { v.mode = 'chat'; v.title = 'New chat'; renderAll(); }
     if (!v.id && !v.projectId && S.settings.cwd !== v.cwd) { /* remember last-used folder */ S.settings.cwd = v.cwd; saveSettings(); }
     attach(r.runId, token);
     setTimeout(refreshRuns, 600);
     scrollToBottom(true);
   } catch (e) {
+    if (e.code === 'FOLDER_MISSING') {
+      if (!input.value) input.value = text;
+      autoGrow(); renderComposerState();
+      return folderMissingDialog(v, e.cwd);
+    }
     toast(e.message);
     if (!input.value) input.value = text;
     autoGrow(); renderComposerState();
   }
+}
+
+function folderMissingDialog(v, cwd) {
+  const m = modal({
+    title: 'Folder not on this computer',
+    body: `<p>This chat was working in <code>${esc(cwd)}</code>, which doesn't exist here — it probably started on another device. Pick a folder on this computer for Claude to continue in. Files Claude made on the other device aren't copied over, only the conversation.</p>`,
+    foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="fmPick">Choose folder…</button>`,
+  });
+  $('#fmPick', m.el).onclick = () => { m.close(); folderPicker('', async p => {
+    try { await api(`/api/sessions/${v.id}`, { method: 'PATCH', body: { cwd: p } }); v.cwd = p; renderAll(); toast('Folder set — press Enter to send'); $('#input').focus(); }
+    catch (err) { toast(err.message); }
+  }); };
 }
 
 async function stop() {
@@ -1221,9 +1506,8 @@ function bind() {
     const v = S.view; if (!v || v.id || v.turns.length) return;
     folderPicker(v.cwd, p => { v.cwd = p; renderComposerState(); });
   };
-  $('#modelSel').value = S.settings.model;
   $('#permSel').value = S.settings.perm;
-  $('#modelSel').onchange = () => { S.settings.model = $('#modelSel').value; saveSettings(); };
+  $('#modelSel').onchange = () => { if (!lockedMode()) { S.settings.model = $('#modelSel').value; saveSettings(); } else S.view.claudeModel = $('#modelSel').value; renderComposerState(); };
   $('#permSel').onchange = () => { S.settings.perm = $('#permSel').value; saveSettings(); renderComposerState(); };
 
   $('#suggestions').innerHTML = SUGGESTIONS.map((s, i) => `<button class="sugg" data-k="${i}">${I[s.icon]}${esc(s.label)}</button>`).join('');
@@ -1278,6 +1562,8 @@ async function init() {
   route();
   setInterval(refreshRuns, 2500);
   checkApp(); setInterval(checkApp, 60000);
+  loadAi();
+  loadSync(); setInterval(loadSync, 30000);
   setInterval(() => { if (!S.runs.length) refreshSessions(); }, 20000);
   window.addEventListener('focus', () => refreshSessions());
 }

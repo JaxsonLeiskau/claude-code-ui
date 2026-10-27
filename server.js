@@ -23,6 +23,9 @@ const TRASH_DIR = path.join(APP_DIR, 'trash');
 const PROJ_FILE = path.join(APP_DIR, 'projects.json');
 const PROJ_ROOT = path.join(APP_DIR, 'projects');
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const ai = require('./ai');
+ai.init({ APP_DIR, spawnClaude: (...a) => spawnClaude(...a) });
+let sync = null; // GitHub sync, set up below
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const IS_WIN = process.platform === 'win32';
 
@@ -141,7 +144,8 @@ async function scanFile({ file, projectDir }) {
 
 function decorate(info) {
   const m = meta.sessions[info.id] || {};
-  return { ...info, title: m.title || info.autoTitle, pinned: !!m.pinned, projectId: projectIdFor(info) };
+  const local = { ...info, cwd: m.cwdOverride || info.cwd };
+  return { ...local, title: m.title || info.autoTitle, pinned: !!m.pinned, projectId: projectIdFor(local) };
 }
 const isInside = (p, dir) => !!p && (p === dir || p.startsWith(dir + path.sep));
 
@@ -203,7 +207,7 @@ async function loadTurns(file, limitBytes) {
 /* ---------------- launching the CLI ---------------- */
 // On Windows `claude` is usually a .cmd shim, which Node can only start through cmd.exe.
 // cmd.exe doesn't quote arguments for us, so paths with spaces need quoting by hand.
-const winQuote = a => (/[\s&|<>^()"%!]/.test(a) ? `"${String(a).replace(/"/g, '""')}"` : a);
+const winQuote = a => (a === '' || /[\s&|<>^()"%!]/.test(a) ? `"${String(a).replace(/"/g, '""')}"` : a);
 function spawnClaude(args, opts) {
   if (IS_WIN) return spawn(winQuote(CLAUDE_BIN), args.map(winQuote), { ...opts, shell: true, windowsHide: true });
   return spawn(CLAUDE_BIN, args, opts);
@@ -242,6 +246,7 @@ function listProjects(sessions) {
   const out = new Map();
   for (const p of Object.values(store.projects)) out.set(p.id, { ...publicProject(p), chatCount: 0, lastActivity: p.updated });
   for (const s of sessions) {
+    if (!s.cwd && !(s.projectId && out.has(s.projectId))) continue;
     let p = out.get(s.projectId);
     if (!p) {
       p = { id: s.projectId, name: path.basename(s.cwd) || s.cwd, description: '', cwd: s.cwd, virtual: true, chatCount: 0, lastActivity: s.updated };
@@ -354,7 +359,7 @@ async function buildContext(project, sessionId) {
   }
   if (earlier.length) {
     parts.push('', '## Earlier chats in this project',
-      `Plain-text copies of ${earlier.length} earlier chat${earlier.length > 1 ? 's' : ''} are in ${chatsDir(project.id)} (one .md file per chat). When the user refers to earlier work, or details beyond the memory would help, search them with Grep or open them with Read.`);
+      `Plain-text copies of ${earlier.length} earlier chat${earlier.length > 1 ? 's' : ''} are in ${chatsDir(project.id)} (one .md file per chat). When the user refers to earlier work, or details beyond the memory would help, search them (for example with grep in Bash) or open them with Read.`);
     for (const s of earlier.slice(0, 40)) parts.push(`- ${(s.updated || '').slice(0, 10)} "${s.title.slice(0, 100)}" → ${s.id}.md`);
     if (earlier.length > 40) parts.push(`- …and ${earlier.length - 40} more in that folder`);
   }
@@ -399,8 +404,8 @@ async function updateMemory(projectId, exchange) {
   ].join('\n');
   const dir = projDir(projectId);
   await fsp.mkdir(dir, { recursive: true });
-  let res = await runClaudeOnce(['-p', '--output-format', 'json', '--model', 'haiku'], input, dir);
-  if (!res || res.is_error) res = await runClaudeOnce(['-p', '--output-format', 'json'], input, dir);
+  let res = await runClaudeOnce(['-p', '--output-format', 'json', '--no-session-persistence', '--model', 'haiku'], input, dir);
+  if (!res || res.is_error) res = await runClaudeOnce(['-p', '--output-format', 'json', '--no-session-persistence'], input, dir);
   // these helper runs write transcripts too; they're not chats, so remove them
   if (res && res.session_id) { const f = await findSessionFile(res.session_id); if (f) await fsp.unlink(f).catch(() => {}); }
   const text = res && !res.is_error && typeof res.result === 'string' ? res.result.trim() : '';
@@ -426,8 +431,11 @@ function finishRun(run, code) {
   for (const l of run.listeners) l(null);
   run.listeners.clear();
   setTimeout(() => runs.delete(run.id), 10 * 60 * 1000);
+  if (sync) sync.soon();
   // feed the project's shared memory
-  if (run.projectId && store.projects[run.projectId] && !run.stopped) {
+  if (run.projectId && store.projects[run.projectId] && !run.stopped && run.replyText) {
+    queueMemoryUpdate(run.projectId, `User: ${run.fullPrompt.slice(0, 6000)}\n\nAssistant: ${run.replyText.slice(-8000)}`);
+  } else if (run.projectId && store.projects[run.projectId] && !run.stopped) {
     const reply = run.events
       .filter(e => e.kind === 'claude' && e.data.type === 'assistant' && !e.data.parent_tool_use_id)
       .flatMap(e => ((e.data.message && e.data.message.content) || []).filter(b => b.type === 'text').map(b => b.text))
@@ -520,13 +528,133 @@ async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowed
 }
 
 function stopRun(run) {
-  if (!run || run.done || !run.proc) return;
+  if (!run || run.done) return;
+  if (run.abort) { run.stopped = true; run.abort.abort(); return; }
+  if (!run.proc) return;
   run.stopped = true;
   try {
     if (IS_WIN) execFile('taskkill', ['/pid', String(run.proc.pid), '/T', '/F'], () => {});
     else run.proc.kill('SIGINT');
   } catch {}
   setTimeout(() => { if (!run.done) try { run.proc.kill('SIGKILL'); } catch {} }, 3000);
+}
+
+/* ---------------- model & debate chats ---------------- */
+// Chats with other AIs are stored by this app (Claude Code chats are Claude Code's own files).
+const CHATS_DIR = path.join(APP_DIR, 'chats');
+const isAppChatId = id => /^a-[0-9a-f]{8,40}$/.test(id);
+const chatFile = id => path.join(CHATS_DIR, id + '.json');
+async function loadChat(id) { try { return JSON.parse(await fsp.readFile(chatFile(id), 'utf8')); } catch { return null; } }
+async function saveChat(chat) {
+  await fsp.mkdir(CHATS_DIR, { recursive: true });
+  const tmp = chatFile(chat.id) + '.tmp';
+  await fsp.writeFile(tmp, JSON.stringify(chat, null, 1));
+  await fsp.rename(tmp, chatFile(chat.id));
+}
+async function listAppChats() {
+  let names = [];
+  try { names = await fsp.readdir(CHATS_DIR); } catch { return []; }
+  const out = [];
+  for (const n of names) {
+    if (!n.endsWith('.json')) continue;
+    const c = await loadChat(n.slice(0, -5));
+    if (!c || !c.messages || !c.messages.length) continue;
+    out.push({
+      id: c.id, kind: c.kind, provider: c.provider || null, title: c.title || 'Untitled', pinned: !!c.pinned,
+      projectId: c.projectId && store.projects[c.projectId] ? c.projectId : null,
+      cwd: null, created: c.created, updated: c.updated, userCount: c.messages.filter(m => m.role === 'user').length,
+      speaker: c.kind === 'model' ? ai.providerName(c.provider) : 'Debate',
+    });
+  }
+  return out;
+}
+function chatTurns(c) {
+  const turns = [];
+  for (const m of c.messages) {
+    if (m.role === 'user') turns.push({ role: 'user', text: m.text, ts: m.ts });
+    else if (m.debate) turns.push({ role: 'assistant', ts: m.ts, blocks: [{ type: 'debate', ...m.debate }, ...(m.text ? [{ type: 'text', text: m.text }] : [])], result: m.ms ? { ms: m.ms } : undefined });
+    else turns.push({ role: 'assistant', ts: m.ts, speaker: m.speaker, blocks: m.text ? [{ type: 'text', text: m.text }] : [], errorText: m.error, result: m.ms ? { ms: m.ms } : undefined });
+  }
+  return turns;
+}
+// The parts of a project that make sense without tools: instructions, memory, small text files
+async function plainProjectContext(project) {
+  if (!project) return '';
+  const parts = [`You're helping with the project "${project.name}".${project.description ? ' ' + project.description : ''}`];
+  if (project.instructions && project.instructions.trim()) parts.push('## Project instructions (follow these)\n' + project.instructions.trim());
+  const memory = await readMemory(project.id);
+  if (memory.trim()) parts.push('## Project memory (notes from earlier chats)\n' + memory.trim());
+  let budget = 40000;
+  for (const f of await listFiles(project.id)) {
+    if (!f.text || f.size > budget) continue;
+    try { parts.push(`<file name="${f.name}">\n${await fsp.readFile(path.join(filesDir(project.id), f.name), 'utf8')}\n</file>`); budget -= f.size; } catch {}
+  }
+  return parts.join('\n\n');
+}
+
+async function startAppRun({ chat, prompt }) {
+  const run = {
+    id: crypto.randomUUID(), sessionId: chat.id, cwd: null, prompt: prompt.slice(0, 200), fullPrompt: prompt,
+    projectId: chat.projectId && store.projects[chat.projectId] ? chat.projectId : null,
+    events: [], listeners: new Set(), done: false, startedAt: Date.now(), abort: new AbortController(), app: true,
+  };
+  runs.set(run.id, run);
+  pushEvent(run, { kind: 'start', runId: run.id, sessionId: chat.id, appChat: { kind: chat.kind, provider: chat.provider } });
+  pushEvent(run, { kind: 'user', text: prompt });
+  // only the latest snapshot is kept, so re-attaching doesn't replay hundreds of them
+  const snap = turn => {
+    const ev = { kind: 'snapshot', turn, t: Date.now() };
+    const i = run.events.findIndex(e => e.kind === 'snapshot');
+    if (i >= 0) run.events[i] = ev; else run.events.push(ev);
+    for (const l of run.listeners) l(ev);
+  };
+  const history = [];
+  for (const m of chat.messages) {
+    if (m.role === 'user') history.push({ role: 'user', content: m.text });
+    else if (m.text) history.push({ role: 'assistant', content: m.text });
+  }
+  const started = Date.now();
+  chat.messages.push({ role: 'user', text: prompt, ts: new Date().toISOString() });
+  if (!chat.title || chat.messages.filter(m => m.role === 'user').length === 1) chat.title = prompt.replace(/\s+/g, ' ').trim().slice(0, 100);
+  chat.updated = new Date().toISOString();
+  await saveChat(chat);
+
+  (async () => {
+    const project = run.projectId ? store.projects[run.projectId] : null;
+    const context = await plainProjectContext(project);
+    const reply = { role: 'assistant', ts: null };
+    try {
+      if (chat.kind === 'debate') {
+        const st = await ai.runDebate({
+          question: prompt, history, context, signal: run.abort.signal,
+          emit: s => snap({ role: 'assistant', blocks: [{ type: 'debate', ...s, consensus: undefined }, ...(s.consensus ? [{ type: 'text', text: s.consensus, draft: s.phase !== 'done' }] : [])] }),
+        });
+        reply.debate = { participants: st.participants, rounds: st.rounds, moderator: st.moderator, phase: 'done' };
+        reply.text = st.consensus;
+      } else {
+        const speaker = ai.providerName(chat.provider);
+        let last = 0;
+        const msgs = [...(context ? [{ role: 'system', content: context }] : []), ...history, { role: 'user', content: prompt }];
+        reply.speaker = speaker;
+        reply.text = await ai.complete(chat.provider, msgs, {
+          signal: run.abort.signal,
+          onText: (_, full) => { const now = Date.now(); if (now - last > 80) { last = now; snap({ role: 'assistant', speaker, blocks: [{ type: 'text', text: full, draft: true }] }); } },
+        });
+      }
+      run.replyText = reply.text;
+    } catch (e) {
+      if (e.name !== 'AbortError') { reply.error = e.message; reply.speaker = reply.speaker || (chat.kind === 'debate' ? 'Debate' : ai.providerName(chat.provider)); }
+    }
+    reply.ts = new Date().toISOString();
+    reply.ms = Date.now() - started;
+    if (reply.text || reply.error || reply.debate) chat.messages.push(reply);
+    chat.updated = reply.ts;
+    await saveChat(chat).catch(() => {});
+    const t = chatTurns({ messages: [reply] })[0];
+    if (t && (reply.text || reply.error || reply.debate)) snap(t);
+    finishRun(run, reply.error ? 1 : 0);
+  })();
+  return run;
 }
 
 /* ---------------- http ---------------- */
@@ -582,8 +710,29 @@ async function route(req, res) {
   }
 
   if (p === '/api/sessions' && m === 'GET') {
-    const sessions = await listSessions();
-    return send(res, 200, { sessions, projects: listProjects(sessions) });
+    const sessions = (await listSessions()).map(s => ({ ...s, kind: 'claude' }));
+    const all = [...sessions, ...await listAppChats()].sort((a, b) => (b.updated || '').localeCompare(a.updated || ''));
+    return send(res, 200, { sessions: all, projects: listProjects(all) });
+  }
+
+  if (p === '/api/sync' && m === 'GET') return send(res, 200, sync.publicStatus());
+  if (p === '/api/sync/connect' && m === 'POST') {
+    const body = await readBody(req);
+    try { return send(res, 200, await sync.connect(body)); }
+    catch (e) { return send(res, 400, { error: e.message, status: sync.publicStatus() }); }
+  }
+  if (p === '/api/sync/now' && m === 'POST') {
+    try { return send(res, 200, await sync.syncNow()); }
+    catch (e) { return send(res, 400, { error: e.message, status: sync.publicStatus() }); }
+  }
+  if (p === '/api/sync/disconnect' && m === 'POST') return send(res, 200, sync.disconnect());
+
+  if (p === '/api/ai' && m === 'GET') return send(res, 200, ai.publicConfig());
+  if (p === '/api/ai' && m === 'PATCH') return send(res, 200, ai.updateConfig(await readBody(req)));
+  if (p === '/api/ai/models' && m === 'POST') {
+    const body = await readBody(req);
+    try { return send(res, 200, await ai.listModels(String(body.provider || ''), body)); }
+    catch (e) { return send(res, 400, { error: e.message }); }
   }
 
   if (p === '/api/app' && m === 'GET') {
@@ -615,6 +764,39 @@ async function route(req, res) {
   if ((mm = p.match(/^\/api\/sessions\/([^/]+)$/))) {
     const id = mm[1];
     if (!ID_RE.test(id)) return send(res, 400, { error: 'Bad session id' });
+    if (isAppChatId(id)) {
+      const chat = await loadChat(id);
+      if (!chat) return send(res, 404, { error: 'Chat not found' });
+      if (m === 'GET') {
+        const run = activeRunFor(id);
+        const msgs = run ? chat.messages.slice(0, -1) : chat.messages; // the running turn arrives live
+        return send(res, 200, {
+          session: { id, kind: chat.kind, provider: chat.provider, title: chat.title, pinned: !!chat.pinned, projectId: chat.projectId && store.projects[chat.projectId] ? chat.projectId : null, cwd: null },
+          turns: chatTurns({ messages: msgs }), run: run ? { id: run.id } : null,
+        });
+      }
+      if (m === 'PATCH') {
+        const body = await readBody(req);
+        if (typeof body.title === 'string' && body.title.trim()) chat.title = body.title.trim().slice(0, 200);
+        if (typeof body.pinned === 'boolean') chat.pinned = body.pinned;
+        if (typeof body.projectId === 'string') {
+          let pid = body.projectId;
+          if (pid.startsWith('dir-')) pid = (await getProject(pid, { create: true }) || {}).id || 'none';
+          chat.projectId = pid === 'none' || !store.projects[pid] ? null : pid;
+        }
+        chat.edited = new Date().toISOString();
+        await saveChat(chat);
+        return send(res, 200, { ok: true });
+      }
+      if (m === 'DELETE') {
+        if (activeRunFor(id)) return send(res, 409, { error: 'This chat is still running' });
+        const dest = path.join(TRASH_DIR, 'chats');
+        await fsp.mkdir(dest, { recursive: true });
+        await fsp.rename(chatFile(id), path.join(dest, id + '.json')).catch(() => {});
+        if (sync) sync.recordDeletion('chat', id);
+        return send(res, 200, { ok: true });
+      }
+    }
     const file = await findSessionFile(id);
     if (m === 'GET') {
       if (!file) return send(res, 404, { error: 'Session not found' });
@@ -627,6 +809,12 @@ async function route(req, res) {
       const body = await readBody(req);
       const cur = meta.sessions[id] || {};
       if (typeof body.title === 'string') cur.title = body.title.trim().slice(0, 200) || undefined;
+      if (typeof body.cwd === 'string' && body.cwd.trim()) {
+        // a chat synced from another device can continue in a folder on this one
+        const dir = path.resolve(body.cwd.trim());
+        try { if (!fs.statSync(dir).isDirectory()) throw 0; } catch { return send(res, 400, { error: `Folder not found: ${dir}` }); }
+        cur.cwdOverride = dir;
+      }
       if (typeof body.pinned === 'boolean') cur.pinned = body.pinned;
       if (typeof body.projectId === 'string' && (body.projectId === 'none' || store.projects[body.projectId] || body.projectId.startsWith('dir-'))) {
         let pid = body.projectId;
@@ -645,6 +833,7 @@ async function route(req, res) {
         await fsp.copyFile(file, path.join(dest, path.basename(file))); await fsp.unlink(file);
       });
       scanCache.delete(file); idToFile.delete(id); delete meta.sessions[id]; saveMeta();
+      if (sync) sync.recordDeletion('claude', id);
       return send(res, 200, { ok: true, movedTo: dest });
     }
   }
@@ -688,6 +877,7 @@ async function route(req, res) {
       await fsp.mkdir(path.dirname(dest), { recursive: true });
       await fsp.rename(projDir(id), dest).catch(() => {});
       delete store.projects[id];
+      if (sync) sync.recordDeletion('project', id);
       for (const k of Object.keys(meta.sessions)) if (meta.sessions[k].projectId === id) delete meta.sessions[k].projectId;
       saveProjects(); saveMeta();
       return send(res, 200, { ok: true });
@@ -730,6 +920,10 @@ async function route(req, res) {
       if (i >= 0) hits.push({ id: path.basename(f.file, '.jsonl') });
       if (hits.length >= 200) break;
     }
+    for (const n of await fsp.readdir(CHATS_DIR).catch(() => [])) {
+      if (!n.endsWith('.json')) continue;
+      try { if ((await fsp.readFile(path.join(CHATS_DIR, n), 'utf8')).toLowerCase().includes(q)) hits.push({ id: n.slice(0, -5) }); } catch {}
+    }
     return send(res, 200, { hits });
   }
 
@@ -752,13 +946,33 @@ async function route(req, res) {
     if (!prompt) return send(res, 400, { error: 'Empty message' });
     const sessionId = body.sessionId || null;
     if (sessionId && !ID_RE.test(sessionId)) return send(res, 400, { error: 'Bad session id' });
-    if (sessionId && activeRunFor(sessionId)) return send(res, 409, { error: 'Claude is still working in this chat' });
+    if (sessionId && activeRunFor(sessionId)) return send(res, 409, { error: 'Still working on the last message in this chat' });
+    const kind = sessionId ? (isAppChatId(sessionId) ? 'app' : 'claude') : ['model', 'debate'].includes(body.kind) ? body.kind : 'claude';
+    if (kind !== 'claude') {
+      let chat;
+      if (sessionId) {
+        chat = await loadChat(sessionId);
+        if (!chat) return send(res, 404, { error: 'Chat not found' });
+      } else {
+        if (kind === 'debate' && !ai.isDebateEnabled()) return send(res, 400, { error: 'Debate mode is turned off in Settings' });
+        const provider = String(body.provider || '');
+        if (kind === 'model' && !ai.configured(provider)) return send(res, 400, { error: `${ai.providerName(provider)} isn't set up yet — add it in Settings → AI models` });
+        const now = new Date().toISOString();
+        const pid = body.projectId && store.projects[body.projectId] ? body.projectId : null;
+        chat = { id: 'a-' + crypto.randomBytes(8).toString('hex'), kind, provider: kind === 'model' ? provider : null, title: '', projectId: pid, created: now, updated: now, device: os.hostname(), messages: [] };
+      }
+      const run = await startAppRun({ chat, prompt });
+      return send(res, 200, { runId: run.id, sessionId: chat.id });
+    }
     let cwd = body.cwd || os.homedir();
     let project = null;
     if (sessionId) {
       const file = await findSessionFile(sessionId);
       const info = file && await scanFile({ file, projectDir: path.basename(path.dirname(file)) });
       if (info && info.cwd) cwd = info.cwd;
+      const ov = meta.sessions[sessionId] && meta.sessions[sessionId].cwdOverride;
+      if (ov && fs.existsSync(ov)) cwd = ov;
+      else if (!fs.existsSync(cwd)) return send(res, 400, { error: 'This chat\'s folder isn\'t on this computer', code: 'FOLDER_MISSING', cwd });
       if (info) project = await getProject(projectIdFor(info));
     } else if (body.projectId && ID_RE.test(body.projectId)) {
       project = await getProject(body.projectId);
@@ -846,6 +1060,15 @@ function start(port = PORT, triesLeft = 10) {
 }
 
 function stopAll() { for (const r of runs.values()) stopRun(r); }
+
+sync = require('./sync');
+sync.init({
+  APP_DIR, PROJECTS_DIR, PROJ_ROOT, CHATS_DIR,
+  listSessions, findSessionFile,
+  getMeta: () => meta, saveMeta, getStore: () => store, saveProjects,
+  busyIds: () => new Set([...runs.values()].filter(r => !r.done && r.sessionId).map(r => r.sessionId)),
+  onIncoming: () => { scanCache.clear(); idToFile.clear(); },
+});
 
 let appHooks = {};
 /** Used by the desktop app to report its version and update status. */

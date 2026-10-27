@@ -17,6 +17,6 @@ jobs:
         with:
           node-version: 22
       - name: Check syntax
-        run: node --check server.js && node --check electron/main.js && node --check public/app.js && node --check public/md.js
+        run: node --check server.js && node --check ai.js && node --check sync.js && node --check electron/main.js && node --check public/app.js && node --check public/md.js
       - name: Smoke test
         run: npm test

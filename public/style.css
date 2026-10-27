@@ -509,3 +509,81 @@ select.input { appearance: none; -webkit-appearance: none; cursor: pointer; }
   .comp-left { flex: 1 1 100%; }
   .comp-right { margin-left: auto; }
 }
+
+/* ---------------- other models, debate ---------------- */
+.av { width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; color: #fff; font: 600 10.5px/1 var(--sans); flex: none; }
+.speaker { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text-2); margin: 0 0 8px; }
+.speaker.consensus { margin-top: 4px; color: var(--ok); }
+.speaker.consensus svg { width: 16px; height: 16px; }
+.speaker small { font-weight: 400; color: var(--muted); }
+.mode-ico:empty { display: none; }
+.mode-ico .av { width: 18px; height: 18px; font-size: 10px; }
+#composer.nonclaude #folderBtn, #composer.nonclaude #permSel { display: none; }
+#composer.nonclaude .comp-left .pill.select { display: none; }
+#modelSel:disabled { cursor: default; opacity: 1; }
+
+.debate { margin: 0 0 14px; border: .5px solid var(--border-strong); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.debate-head { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 12px; text-align: left; }
+.debate-head:hover { background: var(--hover); }
+.debate-head .avs { display: flex; }
+.debate-head .avs .av { box-shadow: 0 0 0 2px var(--surface); }
+.debate-head .avs .av + .av { margin-left: -5px; }
+.dh-title { font-weight: 550; font-size: 13.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dh-sub { color: var(--muted); font-size: 12.5px; }
+.debate-head .chev, .de-head .chev { color: var(--faint); transition: transform .15s; }
+.debate.open > .debate-head .chev, .deb-entry.open .de-head .chev { transform: rotate(180deg); }
+.debate-body { border-top: .5px solid var(--border); padding: 4px 0 6px; }
+.round-label { font-size: 11.5px; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; padding: 10px 14px 4px; }
+.de-head { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 14px; text-align: left; }
+.de-head:hover { background: var(--hover); }
+.de-name { font-weight: 550; font-size: 13.5px; flex: none; }
+.de-prev { flex: 1; min-width: 0; color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.de-head .ok { color: var(--ok); } .de-head .err { color: var(--danger); } .de-head .spin { color: var(--accent); }
+.de-head .ok svg, .de-head .err svg, .de-head .spin svg { width: 15px; height: 15px; }
+.de-head .spin svg { animation: spin 1s linear infinite; }
+.de-body { margin: 2px 14px 10px 44px; font-size: 15px; }
+.de-err { margin: 2px 14px 10px 44px; padding: 8px 10px; border-radius: 8px; background: var(--danger-soft); font: 12.5px var(--mono); white-space: pre-wrap; }
+
+/* ---------------- settings tabs ---------------- */
+.tabs { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--hover); margin-bottom: 4px; }
+.tabs button { flex: 1; height: 30px; border-radius: 8px; font-size: 13px; color: var(--muted); }
+.tabs button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.tab { display: flex; flex-direction: column; gap: 14px; }
+.hint { color: var(--text-2); font-size: 13.5px; line-height: 1.5; margin: 0; }
+.hint a, .field small a, .steps a, .sy-card a { color: var(--accent); }
+.prov { border: .5px solid var(--border-strong); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: var(--surface); }
+.prov-head { display: flex; align-items: center; gap: 8px; }
+.prov-head h3 { margin: 0; font-size: 14px; flex: 1; }
+.pc-status { font-size: 12px; color: var(--muted); max-width: 60%; text-align: right; }
+.pc-status .ok { color: var(--ok); display: inline-flex; gap: 4px; align-items: center; }
+.pc-status .ok svg { width: 13px; height: 13px; }
+.pc-status .err { color: var(--danger); }
+.prov .btn svg { width: 15px; height: 15px; }
+.switch-row { display: flex; align-items: flex-start; gap: 14px; cursor: pointer; }
+.switch-row > span { flex: 1; display: flex; flex-direction: column; gap: 3px; font-size: 14px; }
+.switch-row small { color: var(--muted); font-size: 13px; line-height: 1.45; }
+.switch { appearance: none; -webkit-appearance: none; width: 38px; height: 22px; border-radius: 999px; background: var(--border-strong); position: relative; cursor: pointer; flex: none; transition: background .15s; margin-top: 2px; }
+.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+.switch:checked { background: var(--accent); }
+.switch:checked::after { transform: translateX(16px); }
+#debOpts { display: flex; flex-direction: column; gap: 14px; transition: opacity .15s; }
+#debOpts.disabled { opacity: .45; pointer-events: none; }
+.checks { display: flex; gap: 16px; flex-wrap: wrap; }
+.muted-note { color: var(--muted); font-size: 12px; line-height: 1.45; }
+
+/* ---------------- sync ---------------- */
+.steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; font-size: 13.5px; color: var(--text-2); line-height: 1.5; }
+.row-end { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.sy-msg { flex: 1; color: var(--danger); font-size: 13px; }
+.sy-card { border: .5px solid var(--border-strong); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 12px; background: var(--surface); }
+.sy-row { display: flex; gap: 10px; align-items: flex-start; }
+.sy-row svg { color: var(--ok); margin-top: 2px; }
+.sy-row div { display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
+.sy-row small { color: var(--muted); font-size: 12.5px; }
+.sy-status { font-size: 13px; color: var(--muted); }
+.sy-status.err { color: var(--danger); }
+.sync-badge { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
+.sync-badge.busy { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+.sync-badge.err { background: var(--danger); }
+#app.collapsed .sync-badge { display: none; }
+#syncPane { display: flex; flex-direction: column; gap: 14px; }
