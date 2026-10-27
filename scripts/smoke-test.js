@@ -1,0 +1,64 @@
+#!/usr/bin/env node
+'use strict';
+/*
+ * Smoke test: builds a throwaway Claude Code history, starts the server against it,
+ * and checks that sessions list, open, rename and search correctly.
+ * Doesn't need the real `claude` CLI. Run with: npm test
+ */
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const assert = require('assert');
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccui-test-'));
+const projDir = path.join(tmp, 'projects', '-tmp-demo');
+fs.mkdirSync(projDir, { recursive: true });
+const id = '11111111-2222-3333-4444-555555555555';
+const lines = [
+  { type: 'user', cwd: tmp, sessionId: id, timestamp: '2026-01-01T10:00:00Z', message: { role: 'user', content: 'Fix the flaky login test' } },
+  { type: 'assistant', cwd: tmp, sessionId: id, timestamp: '2026-01-01T10:00:05Z', message: { id: 'm1', role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } }] } },
+  { type: 'user', cwd: tmp, sessionId: id, timestamp: '2026-01-01T10:00:09Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: '12 passed' }] } },
+  { type: 'assistant', cwd: tmp, sessionId: id, timestamp: '2026-01-01T10:00:12Z', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'Fixed a race in the **mock clock**.' }] } },
+];
+fs.writeFileSync(path.join(projDir, id + '.jsonl'), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+
+process.env.CLAUDE_CONFIG_DIR = tmp;
+process.env.HOME = process.env.USERPROFILE = tmp; // keep metadata writes inside the temp folder
+process.env.CLAUDE_BIN = 'claude-not-installed-for-tests';
+
+const { start } = require('../server.js');
+
+(async () => {
+  const port = await start(34000 + Math.floor(Math.random() * 1000));
+  const base = `http://localhost:${port}`;
+  const get = async p => { const r = await fetch(base + p); assert.ok(r.ok, `${p} -> ${r.status}`); return r.json(); };
+
+  const { sessions } = await get('/api/sessions');
+  assert.strictEqual(sessions.length, 1, 'lists the session');
+  assert.strictEqual(sessions[0].title, 'Fix the flaky login test');
+
+  const s = await get(`/api/sessions/${id}`);
+  assert.deepStrictEqual(s.turns.map(t => t.role), ['user', 'assistant'], 'merges tool calls into one reply');
+  const tool = s.turns[1].blocks.find(b => b.type === 'tool');
+  assert.strictEqual(tool.result, '12 passed', 'attaches tool output');
+
+  const r = await fetch(`${base}/api/sessions/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Renamed', pinned: true }) });
+  assert.ok(r.ok);
+  const after = (await get('/api/sessions')).sessions[0];
+  assert.strictEqual(after.title, 'Renamed'); assert.strictEqual(after.pinned, true);
+
+  const { hits } = await get('/api/search?q=mock%20clock');
+  assert.strictEqual(hits.length, 1, 'full-text search finds the message');
+
+  const status = await new Promise((resolve, reject) => {
+    require('http').get({ host: '127.0.0.1', port, path: '/api/info', headers: { Host: 'evil.example' } }, res => { res.resume(); resolve(res.statusCode); }).on('error', reject);
+  });
+  assert.strictEqual(status, 403, 'rejects foreign hosts');
+
+  const page = await fetch(base + '/');
+  assert.ok((await page.text()).includes('id="composer"'), 'serves the UI');
+
+  console.log('✓ all smoke tests passed');
+  fs.rmSync(tmp, { recursive: true, force: true });
+  process.exit(0);
+})().catch(e => { console.error('✗', e.message); process.exit(1); });

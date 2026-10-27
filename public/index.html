@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Claude Code</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23c96442'/%3E%3Cg stroke='%23fff' stroke-width='3' stroke-linecap='round'%3E%3Cpath d='M16 7v18M7 16h18M9.6 9.6l12.8 12.8M22.4 9.6 9.6 22.4'/%3E%3C/g%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar" aria-label="Chats">
+    <div class="sb-head">
+      <button class="icon-btn" id="collapseBtn" title="Toggle sidebar" data-i="panel"></button>
+      <div class="brand label">Claude Code</div>
+    </div>
+
+    <nav class="sb-nav">
+      <button class="sb-item new-chat" id="newChatBtn" title="New chat">
+        <span class="ico-wrap accent" data-i="plus"></span><span class="label">New chat</span>
+      </button>
+      <button class="sb-item" id="searchBtn" title="Search">
+        <span class="ico-wrap" data-i="search"></span><span class="label">Search</span><kbd id="searchKbd">Ctrl K</kbd>
+      </button>
+      <div class="search-box" id="searchBox" hidden>
+        <span data-i="search"></span>
+        <input id="searchInput" type="search" placeholder="Search chats and messages" autocomplete="off" spellcheck="false">
+        <button class="icon-btn tiny" id="searchClear" title="Close search" data-i="x"></button>
+      </div>
+    </nav>
+
+    <div class="sb-scroll" id="sbScroll">
+      <section class="sb-section" id="projectsSec">
+        <div class="sb-label"><span>Projects</span></div>
+        <div id="projectList"></div>
+      </section>
+      <div id="filterBar" hidden></div>
+      <section class="sb-section" id="starredSec" hidden>
+        <div class="sb-label"><span>Starred</span></div>
+        <div id="starredList"></div>
+      </section>
+      <section class="sb-section" id="recentsSec">
+        <div class="sb-label"><span>Recents</span></div>
+        <div id="recentList"></div>
+      </section>
+    </div>
+
+    <div class="sb-foot">
+      <button class="profile" id="settingsBtn" title="Settings">
+        <span class="avatar" id="avatar">?</span>
+        <span class="label profile-text"><span class="name" id="profileName">You</span><span class="sub" id="cliVersion">Claude Code</span></span>
+        <span class="label ico-wrap muted" data-i="settings"></span>
+      </button>
+    </div>
+  </aside>
+  <div id="scrim"></div>
+
+  <main id="main" class="empty">
+    <header id="topbar">
+      <button class="icon-btn mobile-only" id="openSidebarBtn" title="Open sidebar" data-i="panel"></button>
+      <button class="title-btn" id="titleBtn" title="Chat options"><span id="chatTitle">New chat</span><span class="chev" data-i="chevron"></span></button>
+      <div class="top-right">
+        <span class="chip" id="cwdChip" title=""></span>
+        <button class="icon-btn" id="starBtn" title="Star" data-i="star" hidden></button>
+      </div>
+    </header>
+
+    <div id="scroller">
+      <div id="thread" aria-live="polite"></div>
+    </div>
+
+    <div id="hero">
+      <h1><span class="spark">✻</span><span id="greeting">Good evening</span></h1>
+    </div>
+
+    <div id="dock">
+      <button id="jumpBtn" class="jump" title="Scroll to bottom" data-i="arrowDown" hidden></button>
+      <form id="composer" autocomplete="off">
+        <textarea id="input" rows="1" placeholder="How can I help you today?" spellcheck="true"></textarea>
+        <div class="comp-row">
+          <div class="comp-left">
+            <button type="button" class="pill" id="folderBtn" title="Working folder"><span data-i="folder"></span><span id="folderLabel">~</span></button>
+            <label class="pill select" title="Permission mode">
+              <span data-i="shield"></span>
+              <select id="permSel">
+                <option value="default">Ask first</option>
+                <option value="acceptEdits">Accept edits</option>
+                <option value="plan">Plan mode</option>
+                <option value="bypassPermissions">Bypass permissions</option>
+              </select>
+            </label>
+          </div>
+          <div class="comp-right">
+            <label class="pill select ghost" title="Model">
+              <select id="modelSel">
+                <option value="">Default model</option>
+                <option value="opus">Opus</option>
+                <option value="sonnet">Sonnet</option>
+                <option value="haiku">Haiku</option>
+              </select>
+              <span data-i="chevron"></span>
+            </label>
+            <button type="submit" class="send" id="sendBtn" title="Send (Enter)" data-i="arrowUp" disabled></button>
+          </div>
+        </div>
+      </form>
+      <div id="suggestions"></div>
+      <div class="disclaimer">Claude can make mistakes. Review its changes before you ship them.</div>
+    </div>
+  </main>
+</div>
+
+<div id="menu" class="menu" hidden></div>
+<div id="modalRoot"></div>
+<div id="toast" role="status"></div>
+
+<script src="md.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

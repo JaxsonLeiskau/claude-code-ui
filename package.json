@@ -1,0 +1,83 @@
+{
+  "name": "claude-code-ui",
+  "productName": "Claude Code UI",
+  "version": "1.1.0",
+  "description": "A claude.ai-style desktop app for the Claude Code CLI, with your past sessions in the sidebar.",
+  "main": "electron/main.js",
+  "bin": {
+    "claude-code-ui": "server.js"
+  },
+  "scripts": {
+    "start": "electron .",
+    "web": "node server.js",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux",
+    "test": "node scripts/smoke-test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": ">=33.0.0",
+    "electron-builder": ">=25.0.0"
+  },
+  "build": {
+    "appId": "local.claude-code-ui",
+    "productName": "Claude Code UI",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "server.js",
+      "public/**",
+      "electron/**",
+      "build/icon.png",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Claude Code UI"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development",
+      "icon": "build/icon.png"
+    },
+    "artifactName": "Claude-Code-UI-${version}-${os}-${arch}.${ext}"
+  },
+  "author": "Jaxson",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "electron",
+    "desktop",
+    "ai",
+    "gui"
+  ]
+}
