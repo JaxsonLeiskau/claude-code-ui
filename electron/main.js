@@ -40,7 +40,7 @@ function saveState(win) {
   } catch {}
 }
 
-const RELEASES_URL = 'https://github.com/JaxsonLeiskau/claude-code-ui/releases/latest';
+const RELEASES_URL = 'https://github.com/JaxsonLeiskau/roundtable/releases/latest';
 let win = null;
 let serverMod = null;
 let baseUrl = null;
@@ -53,7 +53,7 @@ function createWindow() {
     x: st.x, y: st.y,
     minWidth: 420,
     minHeight: 480,
-    title: 'Claude Code',
+    title: 'Roundtable',
     show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#262624' : '#faf9f5',
     autoHideMenuBar: true,
@@ -65,7 +65,7 @@ function createWindow() {
   if (st.maximized) win.maximize();
 
   win.loadURL(`${baseUrl}/?shell=electron&os=${process.platform}`);
-  // the window title always reads "Claude Code", whatever the page is showing
+  // the window title always reads "Roundtable", whatever the page is showing
   win.on('page-title-updated', e => e.preventDefault());
   win.once('ready-to-show', () => win.show());
 
@@ -125,7 +125,7 @@ function buildMenu() {
           if (!app.isPackaged || !updater) return shell.openExternal(RELEASES_URL);
           updater.checkForUpdates().then(r => {
             const latest = r && r.updateInfo && r.updateInfo.version;
-            if (!latest || latest === app.getVersion()) dialog.showMessageBox(win, { message: 'You\'re up to date', detail: `Claude Code UI ${app.getVersion()} is the latest version.` });
+            if (!latest || latest === app.getVersion()) dialog.showMessageBox(win, { message: 'You\'re up to date', detail: `Roundtable ${app.getVersion()} is the latest version.` });
             else dialog.showMessageBox(win, { message: `Version ${latest} is available`, detail: IS_MAC ? 'Opening the download page…' : 'It\'s downloading now. A "Restart to update" button will appear in the sidebar when it\'s ready.' }).then(() => { if (IS_MAC) shell.openExternal(RELEASES_URL); });
           }).catch(e => dialog.showMessageBox(win, { type: 'warning', message: 'Couldn\'t check for updates', detail: String(e.message || e) }));
         } },
@@ -149,7 +149,7 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-// Same ID the installer gives its shortcuts, so a pinned taskbar icon and the
+// Same ID the installer gives its shortcuts (kept from the app's old name so updates carry over), so a pinned taskbar icon and the
 // running window are treated as one app on Windows
 if (process.platform === 'win32') app.setAppUserModelId('local.claude-code-ui');
 
@@ -173,7 +173,7 @@ if (!app.requestSingleInstanceLock()) {
       const port = await serverMod.start(Number(process.env.PORT) || 3457);
       baseUrl = `http://localhost:${port}`;
     } catch (e) {
-      dialog.showErrorBox('Claude Code couldn\'t start', String(e && e.message || e));
+      dialog.showErrorBox('Roundtable couldn\'t start', String(e && e.message || e));
       app.quit();
       return;
     }

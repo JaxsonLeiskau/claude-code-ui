@@ -2,18 +2,20 @@
 
 <img src="build/icon.png" width="96" alt="">
 
-# Claude Code UI
+# Roundtable
 
-**A clean, claude.ai-style desktop app for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview).**
+**One place for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) and your other AIs, in a clean claude.ai-style app.**
 All your Claude Code sessions in a sidebar, claude.ai-style Projects with shared memory, sync between your computers, and chats or debates with ChatGPT, Gemini and your own Open WebUI model.
 
 [**Download**](../../releases/latest) · [Features](#features) · [Build from source](#build-from-source) · [How it works](#how-it-works)
 
-<img src="docs/screenshot-light.png" alt="Claude Code UI showing a chat with tool calls and a code block" width="860">
+<img src="docs/screenshot-light.png" alt="Roundtable showing a Claude Code chat with tool calls and a code block" width="860">
 
 </div>
 
 > [!NOTE]
+> Roundtable was previously called *Claude Code UI*; updating keeps all your chats and settings.
+>
 > This is an unofficial community project. It isn't made by or affiliated with Anthropic. It's a front end for the official Claude Code CLI, which you install and sign in to separately.
 
 ## Features
@@ -28,7 +30,7 @@ All your Claude Code sessions in a sidebar, claude.ai-style Projects with shared
 - **Permissions without the guesswork** — pick *Ask first*, *Accept edits*, *Plan mode* or *Bypass*. If Claude gets blocked on a tool, one click allows it and continues.
 - **Model picker** (Opus / Sonnet / Haiku), **folder picker** for new chats, and a **stop** button (or `Esc`).
 - Keeps working in the background — switch chats while Claude runs; a spinner marks busy chats, and you re-attach to the live output when you come back.
-- Rename, star and delete chats. Deleted transcripts go to `~/.claude-code-ui/trash`, never erased.
+- Rename, star and delete chats. Deleted transcripts go to `~/.roundtable/trash`, never erased.
 - Light, dark and system themes, collapsible sidebar, and a phone-sized layout.
 - Works with `claude --resume`: every chat has a **Copy resume command** to continue it in the terminal.
 
@@ -55,7 +57,7 @@ All your Claude Code sessions in a sidebar, claude.ai-style Projects with shared
    claude
    ```
 2. Download the installer for your system from the [**latest release**](../../releases/latest):
-   - **Windows:** `Claude-Code-UI-…-win-x64.exe`. If Windows shows *"Windows protected your PC"*, click **More info → Run anyway** (the app isn't signed with a paid certificate).
+   - **Windows:** `Roundtable-…-win-x64.exe`. If Windows shows *"Windows protected your PC"*, click **More info → Run anyway** (the app isn't signed with a paid certificate).
    - **Mac:** the `.dmg` for your chip (`arm64` for Apple Silicon, `x64` for Intel). Drag the app into Applications; the first time, right-click it → **Open** → **Open**.
    - **Linux:** the `.AppImage`. Make it executable (`chmod +x`) and run it.
 
@@ -65,7 +67,7 @@ All your Claude Code sessions in a sidebar, claude.ai-style Projects with shared
 
 In the app: **Settings → Sync**. It walks you through it:
 
-1. **Create a private repository** for your chats (once — e.g. `claude-code-sync`). Keep it private; your chats are stored there.
+1. **Create a private repository** for your chats (once — e.g. `roundtable-sync`). Keep it private; your chats are stored there.
 2. **Create a token for each computer** — a fine-grained GitHub token with access to *only* that repository and *Contents: Read and write*. The app's link pre-fills everything except picking the repository.
 3. **Paste it in and sign in.** The first sync merges what's on this computer with what's already there.
 
@@ -75,7 +77,7 @@ After that it syncs every few minutes and after each reply; there's also **Sync 
 - **Not synced:** the files Claude edits in your project folders (use git for code), API keys, and app settings.
 - **Continuing on another computer:** if the chat's folder doesn't exist there, the app asks which folder to use.
 - **Same chat on two computers at once:** both versions are kept — the other one appears as "(copy from other device)".
-- **Deleting** a chat or project on one computer deletes it everywhere (it goes to `~/.claude-code-ui/trash`).
+- **Deleting** a chat or project on one computer deletes it everywhere (it goes to `~/.roundtable/trash`).
 
 ## Add other AI models
 
@@ -95,7 +97,7 @@ Requires [Node.js](https://nodejs.org) 18 or newer.
 
 ```bash
 git clone <this repo's URL>
-cd claude-code-ui
+cd roundtable
 npm install
 npm start          # run the desktop app
 npm run dist       # build an installer for your OS into ./dist
@@ -125,9 +127,9 @@ If you run from source, `git pull` gets the latest code.
 - **Messages** run `claude` in headless mode in the chat's folder, streaming its events into the window.
 - The server only listens on `127.0.0.1` and rejects requests from other hosts or websites, since it can run Claude with tool access.
 - Headless mode can't pause to ask for approval mid-task, so tool permissions are chosen up front (or granted afterwards with **Allow & continue**).
-- **Projects** live in `~/.claude-code-ui/projects/<id>/` (`files/`, `memory.md`, and `chats/` with plain-text copies of the project's chats). The first message of each project chat carries the instructions, memory, small text files inline, and a list of earlier chats; the folder is shared with Claude via `--add-dir` so it can read the rest. After each reply, a short background Claude call folds anything worth keeping into `memory.md`.
+- **Projects** live in `~/.roundtable/projects/<id>/` (`files/`, `memory.md`, and `chats/` with plain-text copies of the project's chats). The first message of each project chat carries the instructions, memory, small text files inline, and a list of earlier chats; the folder is shared with Claude via `--add-dir` so it can read the rest. After each reply, a short background Claude call folds anything worth keeping into `memory.md`.
 - **Sync** (`sync.js`) talks to the GitHub API directly (no git needed): it compares each file with what both sides looked like at the last sync, pulls the other computers' changes, and pushes this one's as a single commit.
-- **Other models** (`ai.js`) use the OpenAI-compatible chat API that OpenAI, Gemini and Open WebUI all offer, with streaming. Those chats are stored in `~/.claude-code-ui/chats/`.
+- **Other models** (`ai.js`) use the OpenAI-compatible chat API that OpenAI, Gemini and Open WebUI all offer, with streaming. Those chats are stored in `~/.roundtable/chats/`.
 - The server and UI are plain Node and vanilla JavaScript with no dependencies. The desktop app adds Electron and `electron-updater`.
 
 ### Options

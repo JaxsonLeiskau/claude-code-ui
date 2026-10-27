@@ -66,10 +66,10 @@ function device(name, port) {
   const ccId = (await desk.api('/api/sessions')).sessions.find(s => s.kind === 'claude').id;
 
   // sync: desktop up, laptop down
-  await assert.rejects(desk.api('/api/sync/connect', 'POST', { token: 'bad', repo: 'claude-code-sync' }), /token/);
+  await assert.rejects(desk.api('/api/sync/connect', 'POST', { token: 'bad', repo: 'roundtable-sync' }), /token/);
   await assert.rejects(desk.api('/api/sync/connect', 'POST', { token: 'tok-good', repo: 'public-repo' }), /public/);
-  await desk.api('/api/sync/connect', 'POST', { token: 'tok-good', repo: 'claude-code-sync' });
-  await lap.api('/api/sync/connect', 'POST', { token: 'tok-good', repo: 'claude-code-sync' });
+  await desk.api('/api/sync/connect', 'POST', { token: 'tok-good', repo: 'roundtable-sync' });
+  await lap.api('/api/sync/connect', 'POST', { token: 'tok-good', repo: 'roundtable-sync' });
   let lapList = (await lap.api('/api/sessions')).sessions;
   assert.strictEqual(lapList.length, 3, 'laptop received all three chats');
   assert.ok(lapList.some(s => s.id === ccId && s.kind === 'claude'), 'Claude Code chat synced');

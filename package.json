@@ -1,13 +1,13 @@
 {
-  "name": "claude-code-ui",
-  "productName": "Claude Code UI",
-  "version": "1.3.0",
-  "description": "A claude.ai-style desktop app for Claude Code, with projects, sync between devices, and chats/debates with other AI models.",
+  "name": "roundtable",
+  "productName": "Roundtable",
+  "version": "1.4.0",
+  "description": "One place for Claude Code and your other AIs: projects with shared memory, chats with ChatGPT, Gemini and your own model, AI debates, and sync across your computers.",
   "author": "Jaxson",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/JaxsonLeiskau/claude-code-ui.git"
+    "url": "https://github.com/JaxsonLeiskau/roundtable.git"
   },
   "keywords": [
     "claude",
@@ -22,7 +22,7 @@
   ],
   "main": "electron/main.js",
   "bin": {
-    "claude-code-ui": "server.js"
+    "roundtable": "server.js"
   },
   "scripts": {
     "start": "electron .",
@@ -45,7 +45,7 @@
   },
   "build": {
     "appId": "local.claude-code-ui",
-    "productName": "Claude Code UI",
+    "productName": "Roundtable",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -88,7 +88,7 @@
     "nsis": {
       "oneClick": true,
       "createDesktopShortcut": true,
-      "shortcutName": "Claude Code UI"
+      "shortcutName": "Roundtable"
     },
     "linux": {
       "target": [
@@ -97,12 +97,12 @@
       "category": "Development",
       "icon": "build/icon.png"
     },
-    "artifactName": "Claude-Code-UI-${version}-${os}-${arch}.${ext}",
+    "artifactName": "Roundtable-${version}-${os}-${arch}.${ext}",
     "publish": [
       {
         "provider": "github",
         "owner": "JaxsonLeiskau",
-        "repo": "claude-code-ui",
+        "repo": "roundtable",
         "releaseType": "release"
       }
     ]

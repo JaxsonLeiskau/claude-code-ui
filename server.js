@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * Claude Code UI — a local, claude.ai-style interface for the Claude Code CLI.
+ * Roundtable — a claude.ai-style home for Claude Code and other AI models.
  * No dependencies. Reads your sessions from ~/.claude/projects and runs the
  * `claude` CLI in headless mode (stream-json) for new messages.
  */
@@ -17,7 +17,9 @@ const PORT = Number(process.env.PORT) || 3456;
 const HOST = '127.0.0.1';
 const CLAUDE_HOME = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
-const APP_DIR = path.join(os.homedir(), '.claude-code-ui');
+const APP_DIR = path.join(os.homedir(), '.roundtable');
+// this app used to be called Claude Code UI; bring its data along
+try { const old = path.join(os.homedir(), '.claude-code-ui'); if (fs.existsSync(old) && !fs.existsSync(APP_DIR)) fs.renameSync(old, APP_DIR); } catch {}
 const META_FILE = path.join(APP_DIR, 'meta.json');
 const TRASH_DIR = path.join(APP_DIR, 'trash');
 const PROJ_FILE = path.join(APP_DIR, 'projects.json');
@@ -1080,7 +1082,7 @@ module.exports = { start, stopAll, setAppHooks, _internal: { buildContext, getPr
 if (require.main === module) {
   start().then(port => {
     const url = `http://localhost:${port}`;
-    console.log(`\n  ✻ Claude Code UI running at ${url}\n    Reading sessions from ${PROJECTS_DIR}\n    Press Ctrl+C to quit.\n`);
+    console.log(`\n  ✻ Roundtable running at ${url}\n    Reading sessions from ${PROJECTS_DIR}\n    Press Ctrl+C to quit.\n`);
     openBrowser(url);
   }).catch(e => { console.error(e.message); process.exit(1); });
   process.on('SIGINT', () => { stopAll(); setTimeout(() => process.exit(0), 300); });

@@ -1,5 +1,5 @@
 'use strict';
-/* Claude Code UI — front end */
+/* Roundtable — front end */
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -301,7 +301,7 @@ function renameDialog(id, current) {
 function deleteDialog(id, title) {
   const m = modal({
     title: 'Delete chat?',
-    body: `<p>“${esc(title)}” will be removed from your Claude Code history. The transcript is moved to <code>${esc(homeify((S.info && S.info.appDir) || '~/.claude-code-ui'))}/trash</code>, so you can recover it by hand if you need to.</p>`,
+    body: `<p>“${esc(title)}” will be removed from your Claude Code history. The transcript is moved to <code>${esc(homeify((S.info && S.info.appDir) || '~/.roundtable'))}/trash</code>, so you can recover it by hand if you need to.</p>`,
     foot: `<button class="btn" data-close>Cancel</button><button class="btn danger" id="delGo">Delete</button>`,
   });
   $('#delGo', m.el).onclick = async () => {
@@ -984,7 +984,7 @@ function renderHeader() {
   const isProj = v && v.mode === 'project';
   $('#chatTitle').textContent = v && !isProj ? v.title : '';
   $('#titleBtn').hidden = !!isProj;
-  document.title = 'Claude Code';
+  document.title = 'Roundtable';
   const crumb = $('#crumbBtn');
   const proj = v && !isProj && v.id && projectById(v.projectId);
   crumb.hidden = !proj;
@@ -1320,9 +1320,9 @@ function renderSyncBadge() {
 function renderSyncPane(pane) {
   const st = S.sync || { connected: false };
   if (!st.connected) {
-    const repoUrl = 'https://github.com/new?name=claude-code-sync&visibility=private&description=' + encodeURIComponent('Chats synced by Claude Code UI (keep private)');
-    const tokUrl = 'https://github.com/settings/personal-access-tokens/new?name=' + encodeURIComponent(`Claude Code UI (${st.device || 'device'})`).slice(0, 120) +
-      '&description=' + encodeURIComponent('Lets Claude Code UI sync chats to a private repository') + '&expires_in=none&contents=write';
+    const repoUrl = 'https://github.com/new?name=roundtable-sync&visibility=private&description=' + encodeURIComponent('Chats synced by Roundtable (keep private)');
+    const tokUrl = 'https://github.com/settings/personal-access-tokens/new?name=' + encodeURIComponent(`Roundtable (${st.device || 'device'})`).slice(0, 120) +
+      '&description=' + encodeURIComponent('Lets Roundtable sync chats to a private repository') + '&expires_in=none&contents=write';
     pane.innerHTML = `
       <p class="hint">Sign in with GitHub to keep your chats, projects and memory the same on every computer you use. Everything goes to a <strong>private repository</strong> in your own GitHub account. Do these steps once per computer (step 1 only the first time).</p>
       <ol class="steps">
@@ -1330,7 +1330,7 @@ function renderSyncPane(pane) {
         <li><strong>Create a sign-in token</strong> for this computer. <a href="${tokUrl}" target="_blank" rel="noopener">Open the token page</a> — under <em>Repository access</em> choose <em>Only select repositories</em> and pick your chats repository, then click <em>Generate token</em> and copy it.</li>
         <li><strong>Paste it here:</strong></li>
       </ol>
-      <label class="field"><span>Repository</span><input class="input mono" id="syRepo" placeholder="claude-code-sync" value="claude-code-sync"></label>
+      <label class="field"><span>Repository</span><input class="input mono" id="syRepo" placeholder="roundtable-sync" value="roundtable-sync"></label>
       <label class="field"><span>Token</span><input class="input mono" id="syTok" placeholder="github_pat_…" autocomplete="off" type="password"></label>
       <div class="row-end"><span class="sy-msg" id="syMsg"></span><button class="btn accent" id="syGo">Sign in & sync</button></div>
       <small class="muted-note">The token is saved only on this computer and can only reach that one repository. Your API keys for other AI models are never synced.</small>`;
@@ -1352,7 +1352,7 @@ function renderSyncPane(pane) {
     </div>
     <p class="hint">Syncs automatically every few minutes and after each reply. What syncs: Claude Code chats, chats with other models, debates, chat names and stars, and projects with their instructions, memory and files. What doesn't: the files Claude edits in your folders (use git for code), API keys and app settings.</p>
     <p class="hint">If the same chat gets new messages on two computers before they sync, you'll see both: the other version appears as a separate chat marked “(copy from other device)”.</p>
-    ${st.conflicts ? `<p class="hint">${st.conflicts} other item${st.conflicts > 1 ? 's were' : ' was'} edited on two computers at once; the older version is saved in <code>${esc(homeify(((S.info && S.info.appDir) || '~/.claude-code-ui')))}/conflicts</code>.</p>` : ''}`;
+    ${st.conflicts ? `<p class="hint">${st.conflicts} other item${st.conflicts > 1 ? 's were' : ' was'} edited on two computers at once; the older version is saved in <code>${esc(homeify(((S.info && S.info.appDir) || '~/.roundtable')))}/conflicts</code>.</p>` : ''}`;
   $('#syNow', pane).onclick = async () => {
     $('#syNow', pane).disabled = true; $('.sy-status', pane).textContent = 'Syncing…';
     try { S.sync = await api('/api/sync/now', { method: 'POST' }); refreshSessions(); }

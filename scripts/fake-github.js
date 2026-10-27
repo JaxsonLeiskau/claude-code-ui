@@ -17,7 +17,7 @@ http.createServer((req, res) => {
     let m;
     if (u === '/user') return send(200, { login: 'JaxsonLeiskau' });
     if (u === '/__stats') return send(200, { calls, files: ref ? [...trees.get(commits.get(ref).tree).keys()] : [] });
-    if ((m = u.match(/^\/repos\/([^/]+)\/([^/]+)$/))) return m[2] === 'public-repo' ? send(200, { private: false, permissions: { push: true }, default_branch: 'main' }) : m[2] === 'claude-code-sync' ? send(200, { private: true, permissions: { push: true }, default_branch: 'main' }) : send(404, { message: 'Not Found' });
+    if ((m = u.match(/^\/repos\/([^/]+)\/([^/]+)$/))) return m[2] === 'public-repo' ? send(200, { private: false, permissions: { push: true }, default_branch: 'main' }) : m[2] === 'roundtable-sync' ? send(200, { private: true, permissions: { push: true }, default_branch: 'main' }) : send(404, { message: 'Not Found' });
     const R = u.replace(/^\/repos\/[^/]+\/[^/]+/, '');
     if (R === '/git/ref/heads/main') return ref ? send(200, { object: { sha: ref } }) : send(409, { message: 'Git Repository is empty.' });
     if (R === '/contents/README.md' && req.method === 'PUT') {

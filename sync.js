@@ -64,7 +64,7 @@ function publicStatus() {
 async function gh(method, url, body, token = cfg && cfg.token) {
   const res = await fetch(url.startsWith('http') ? url : API + url, {
     method,
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'claude-code-ui', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'roundtable', ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(120000),
   }).catch(e => { throw new Error(`Couldn't reach GitHub (${e.cause ? e.cause.code || e.cause.message : e.message})`); });
@@ -310,7 +310,7 @@ async function doSync(retry = true) {
     } catch (e) {
       if (e.status !== 404 && e.status !== 409) throw e;
       // empty repository: create the first commit
-      await gh('PUT', `${R}/contents/README.md`, { message: 'Set up Claude Code UI sync', content: Buffer.from('# Claude Code UI sync\n\nChats and projects synced between devices by Claude Code UI. Keep this repository private.\n').toString('base64'), branch });
+      await gh('PUT', `${R}/contents/README.md`, { message: 'Set up Roundtable sync', content: Buffer.from('# Roundtable sync\n\nChats and projects synced between devices by Roundtable. Keep this repository private.\n').toString('base64'), branch });
       head = (await gh('GET', `${R}/git/ref/heads/${branch}`)).object.sha;
     }
     const commit = await gh('GET', `${R}/git/commits/${head}`);
