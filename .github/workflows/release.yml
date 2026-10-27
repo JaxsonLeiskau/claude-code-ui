@@ -1,18 +1,43 @@
 name: Build installers
 
-# Push a tag like v1.2.0 to build Windows, Mac and Linux installers and attach them
-# to a GitHub Release. Installed copies of the app pick the new version up automatically.
-# Can also be run by hand from the Actions tab (that builds without publishing).
+# Whenever main has a version in package.json that hasn't been released yet, build the
+# Windows, Mac and Linux installers and publish them as a GitHub Release (tag v<version>).
+# Installed copies of the app then update themselves to it.
+# To release: bump "version" in package.json and push. Running this by hand from the
+# Actions tab builds the installers without publishing.
 on:
   push:
-    tags: ['v*']
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$(node -p "require('./package.json').version")"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG is already released; nothing to publish."
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "Will build and publish $TAG."
+          fi
+
   build:
+    needs: version
+    if: needs.version.outputs.release == 'true' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -45,8 +70,8 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [version, build]
+    if: needs.version.outputs.release == 'true' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -55,5 +80,8 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Claude Code UI ${{ needs.version.outputs.tag }}
           files: installers/*
           generate_release_notes: true

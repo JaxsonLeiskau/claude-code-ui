@@ -74,14 +74,7 @@ On Windows you can also double-click `start.bat`, which installs on first run an
 
 ### Releasing
 
-Bump `version` in `package.json`, then tag and push:
-
-```bash
-git tag v1.2.0
-git push origin v1.2.0
-```
-
-GitHub Actions builds the Windows, Mac and Linux installers and attaches them to a new release automatically, and installed copies of the app update themselves to it.
+Bump `version` in `package.json` and push to `main`. GitHub Actions notices the new version, builds the Windows, Mac and Linux installers, and publishes them as a release tagged `v<version>`. Installed copies of the app update themselves to it.
 
 If you run from source, `git pull` gets the latest code.
 
