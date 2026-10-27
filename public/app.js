@@ -351,6 +351,26 @@ function currentMode() {
   if (m.startsWith('model:') && !(S.ai && (S.ai.available || []).some(p => 'model:' + p.id === m))) return 'claude:';
   return m;
 }
+// The Debate switch next to the message box: same setting as Settings → Debate
+async function toggleDebate() {
+  const turnOn = currentMode() !== 'debate';
+  try {
+    if (turnOn && !S.ai.debateEnabled) S.ai = await api('/api/ai', { method: 'PATCH', body: { debateEnabled: true } });
+    if (!turnOn) S.ai = await api('/api/ai', { method: 'PATCH', body: { debateEnabled: false } });
+  } catch (e) { toast(e.message); return; }
+  if (turnOn && (S.ai.debateParticipants || []).length < 2) {
+    toast('Debate needs at least two AIs — add a ChatGPT or Gemini key');
+    S.ai = await api('/api/ai', { method: 'PATCH', body: { debateEnabled: false } }).catch(() => S.ai);
+    renderComposerState();
+    return settingsDialog('ai');
+  }
+  S.settings.model = turnOn ? 'debate' : (S.settings.model === 'debate' ? 'claude:' : S.settings.model);
+  saveSettings();
+  renderComposerState();
+  toast(turnOn ? `Debate on: ${(S.ai.debateParticipants || []).map(p => p.name).join(', ')}` : 'Debate off');
+  $('#input').focus();
+}
+
 function buildModeOptions() {
   const sel = $('#modelSel');
   const lock = lockedMode();
@@ -359,7 +379,7 @@ function buildModeOptions() {
   const avail = (S.ai && S.ai.available) || [];
   if (lock !== 'claude') {
     if (avail.length) h += `<optgroup label="Chat with">${avail.map(p => opt('model:' + p.id, p.name)).join('')}</optgroup>`;
-    if (S.ai && S.ai.debateEnabled) h += `<optgroup label="Debate">${opt('debate', 'Debate: ' + (S.ai.debateParticipants || []).map(p => p.name).join(', '))}</optgroup>`;
+    if (S.ai && S.ai.debateEnabled) h += `<optgroup label="Debate">${opt('debate', 'Debate')}</optgroup>`;
     if (lock && !sel.innerHTML.includes(lock)) h += opt(lock, modeLabel(lock));
   }
   if (lock && lock !== 'claude') h = opt(lock, modeLabel(lock));
@@ -1013,6 +1033,11 @@ function renderComposerState() {
   $('#folderLabel').textContent = v ? (baseName(v.cwd) || homeify(v.cwd) || 'Choose folder') : '';
   $('#permSel').closest('.pill').classList.toggle('perm-bypass', $('#permSel').value === 'bypassPermissions');
   buildModeOptions();
+  const dt = $('#debateToggle');
+  const debOn = !!(S.ai && S.ai.debateEnabled);
+  dt.hidden = !S.ai || !!(v && v.id);                 // a chat that's already started keeps its mode
+  dt.classList.toggle('on', debOn && currentMode() === 'debate');
+  dt.setAttribute('aria-checked', String(debOn && currentMode() === 'debate'));
   const mode = currentMode();
   const claudeMode = mode.startsWith('claude:');
   $('#composer').classList.toggle('nonclaude', !claudeMode);
@@ -1507,6 +1532,7 @@ function bind() {
     folderPicker(v.cwd, p => { v.cwd = p; renderComposerState(); });
   };
   $('#permSel').value = S.settings.perm;
+  $('#debateToggle').onclick = toggleDebate;
   $('#modelSel').onchange = () => { if (!lockedMode()) { S.settings.model = $('#modelSel').value; saveSettings(); } else S.view.claudeModel = $('#modelSel').value; renderComposerState(); };
   $('#permSel').onchange = () => { S.settings.perm = $('#permSel').value; saveSettings(); renderComposerState(); };
 
