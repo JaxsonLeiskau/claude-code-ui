@@ -20,6 +20,8 @@ const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
 const APP_DIR = path.join(os.homedir(), '.claude-code-ui');
 const META_FILE = path.join(APP_DIR, 'meta.json');
 const TRASH_DIR = path.join(APP_DIR, 'trash');
+const PROJ_FILE = path.join(APP_DIR, 'projects.json');
+const PROJ_ROOT = path.join(APP_DIR, 'projects');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const IS_WIN = process.platform === 'win32';
@@ -51,7 +53,11 @@ function cleanUserText(s) {
     const args = (s.match(/<command-args>([\s\S]*?)<\/command-args>/) || [])[1] || '';
     return (cmd[1].trim() + ' ' + args.trim()).trim();
   }
-  return s.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
+  return s
+    .replace(/<project-context>[\s\S]*?<\/project-context>\s*/g, '')
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+    .replace(/<\/?pasted_content[^>]*>/g, '')
+    .trim();
 }
 
 function userParts(message) {
@@ -135,8 +141,9 @@ async function scanFile({ file, projectDir }) {
 
 function decorate(info) {
   const m = meta.sessions[info.id] || {};
-  return { ...info, title: m.title || info.autoTitle, pinned: !!m.pinned };
+  return { ...info, title: m.title || info.autoTitle, pinned: !!m.pinned, projectId: projectIdFor(info) };
 }
+const isInside = (p, dir) => !!p && (p === dir || p.startsWith(dir + path.sep));
 
 async function listSessions() {
   const files = await listSessionFiles();
@@ -144,7 +151,7 @@ async function listSessions() {
   // modest concurrency so huge histories don't spike memory
   for (let i = 0; i < files.length; i += 16) {
     const batch = await Promise.all(files.slice(i, i + 16).map(scanFile));
-    for (const b of batch) if (b) infos.push(decorate(b));
+    for (const b of batch) if (b && !isInside(b.cwd, APP_DIR)) infos.push(decorate(b));
   }
   infos.sort((a, b) => (b.updated || '').localeCompare(a.updated || ''));
   return infos;
@@ -193,7 +200,217 @@ async function loadTurns(file, limitBytes) {
   return turns.filter(t => t.role !== 'assistant' || t.blocks.length);
 }
 
-/* ---------------- running the CLI ---------------- */
+/* ---------------- launching the CLI ---------------- */
+// On Windows `claude` is usually a .cmd shim, which Node can only start through cmd.exe.
+// cmd.exe doesn't quote arguments for us, so paths with spaces need quoting by hand.
+const winQuote = a => (/[\s&|<>^()"%!]/.test(a) ? `"${String(a).replace(/"/g, '""')}"` : a);
+function spawnClaude(args, opts) {
+  if (IS_WIN) return spawn(winQuote(CLAUDE_BIN), args.map(winQuote), { ...opts, shell: true, windowsHide: true });
+  return spawn(CLAUDE_BIN, args, opts);
+}
+
+/* ---------------- projects ---------------- */
+// A project = name, description, instructions, a working folder, reference files and a
+// shared memory. Every chat in a project gets all of that, plus searchable copies of the
+// project's earlier chats. Folders used with Claude Code that have no project yet show up
+// as "folder projects" (id dir-…) and turn into real ones the first time they're edited.
+let store = { projects: {} };
+try { store = JSON.parse(fs.readFileSync(PROJ_FILE, 'utf8')); store.projects = store.projects || {}; } catch {}
+function saveProjects() {
+  try { fs.mkdirSync(APP_DIR, { recursive: true }); fs.writeFileSync(PROJ_FILE, JSON.stringify(store, null, 2)); }
+  catch (e) { console.error('Could not save projects:', e.message); }
+}
+const dirProjectId = cwd => 'dir-' + crypto.createHash('sha1').update(String(cwd)).digest('hex').slice(0, 12);
+const projDir = id => path.join(PROJ_ROOT, id);
+const filesDir = id => path.join(projDir(id), 'files');
+const chatsDir = id => path.join(projDir(id), 'chats');
+const memoryFile = id => path.join(projDir(id), 'memory.md');
+
+function projectIdFor(info) {
+  const m = meta.sessions[info.id] || {};
+  if (m.projectId && m.projectId !== 'none' && store.projects[m.projectId]) return m.projectId;
+  if (m.projectId !== 'none') {
+    const owner = Object.values(store.projects)
+      .filter(p => p.cwd && info.cwd && path.resolve(p.cwd) === path.resolve(info.cwd))
+      .sort((a, b) => (a.created || '').localeCompare(b.created || ''))[0];
+    if (owner) return owner.id;
+  }
+  return dirProjectId(info.cwd);
+}
+
+function listProjects(sessions) {
+  const out = new Map();
+  for (const p of Object.values(store.projects)) out.set(p.id, { ...publicProject(p), chatCount: 0, lastActivity: p.updated });
+  for (const s of sessions) {
+    let p = out.get(s.projectId);
+    if (!p) {
+      p = { id: s.projectId, name: path.basename(s.cwd) || s.cwd, description: '', cwd: s.cwd, virtual: true, chatCount: 0, lastActivity: s.updated };
+      out.set(p.id, p);
+    }
+    p.chatCount++;
+    if (!p.lastActivity || s.updated > p.lastActivity) p.lastActivity = s.updated;
+  }
+  return [...out.values()].sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''));
+}
+const publicProject = p => ({
+  id: p.id, name: p.name, description: p.description || '', instructions: p.instructions || '', cwd: p.cwd,
+  memoryEnabled: p.memoryEnabled !== false, memoryUpdated: p.memoryUpdated || null, created: p.created, updated: p.updated, virtual: false,
+});
+
+async function getProject(id, { create = false } = {}) {
+  if (store.projects[id]) return store.projects[id];
+  if (!id.startsWith('dir-')) return null;
+  const s = (await listSessions()).find(x => x.projectId === id);
+  if (!s) return null;
+  if (!create) return { id, name: path.basename(s.cwd) || s.cwd, description: '', instructions: '', cwd: s.cwd, memoryEnabled: true, virtual: true };
+  const now = new Date().toISOString();
+  store.projects[id] = { id, name: path.basename(s.cwd) || s.cwd, description: '', instructions: '', cwd: s.cwd, memoryEnabled: true, created: now, updated: now };
+  saveProjects();
+  return store.projects[id];
+}
+
+const safeName = n => String(n || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/^\.+/, '').trim().slice(0, 120) || 'file';
+const TEXT_EXT = /\.(txt|md|markdown|csv|tsv|json|ya?ml|toml|ini|xml|html?|css|js|jsx|ts|tsx|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|sh|ps1|bat|sql|log|env\.example|rst|tex)$/i;
+
+async function listFiles(id) {
+  let names = [];
+  try { names = await fsp.readdir(filesDir(id)); } catch { return []; }
+  const out = [];
+  for (const name of names) {
+    try {
+      const st = await fsp.stat(path.join(filesDir(id), name));
+      if (st.isFile()) out.push({ name, size: st.size, added: st.mtime.toISOString(), text: TEXT_EXT.test(name) });
+    } catch {}
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+const readMemory = async id => { try { return await fsp.readFile(memoryFile(id), 'utf8'); } catch { return ''; } };
+
+function turnsToMarkdown(info, turns) {
+  const lines = [`# ${info.title}`, `Date: ${(info.updated || '').slice(0, 10)}  ·  Chat id: ${info.id}`, ''];
+  for (const t of turns) {
+    if (t.role === 'user') lines.push(`## User`, t.text, '');
+    else if (t.role === 'assistant') {
+      lines.push('## Claude');
+      for (const b of t.blocks) {
+        if (b.type === 'text') lines.push(b.text);
+        else if (b.type === 'tool') {
+          const inp = b.input || {};
+          const what = inp.command || inp.file_path || inp.pattern || inp.url || inp.query || inp.description || '';
+          lines.push(`_(used ${b.name}${what ? ': ' + String(what).slice(0, 160) : ''})_`);
+        }
+      }
+      lines.push('');
+    }
+  }
+  return clip(lines.join('\n'), 200000);
+}
+
+// Keep plain-text copies of the project's chats in sync, so any chat can grep earlier ones
+async function syncChatExports(project, sessions, excludeId) {
+  const dir = chatsDir(project.id);
+  await fsp.mkdir(dir, { recursive: true });
+  const mine = sessions.filter(s => s.projectId === project.id && s.id !== excludeId);
+  const keep = new Set();
+  for (const s of mine) {
+    const out = path.join(dir, s.id + '.md');
+    keep.add(s.id + '.md');
+    try {
+      const file = await findSessionFile(s.id);
+      if (!file) continue;
+      const [src, dst] = await Promise.all([fsp.stat(file), fsp.stat(out).catch(() => null)]);
+      if (dst && dst.mtimeMs >= src.mtimeMs) continue;
+      await fsp.writeFile(out, turnsToMarkdown(s, await loadTurns(file)));
+    } catch {}
+  }
+  for (const f of await fsp.readdir(dir).catch(() => [])) if (!keep.has(f)) await fsp.unlink(path.join(dir, f)).catch(() => {});
+  return mine;
+}
+
+async function buildContext(project, sessionId) {
+  const sessions = await listSessions();
+  const [files, memory, earlier] = await Promise.all([listFiles(project.id), readMemory(project.id), syncChatExports(project, sessions, sessionId)]);
+  const parts = [
+    `<project-context>`,
+    `This chat is part of the project "${project.name}". Everything in this block is shared by every chat in the project. Use it naturally; don't mention this block unless asked.`,
+  ];
+  if (project.description) parts.push('', `Project description: ${project.description}`);
+  if (project.instructions && project.instructions.trim()) parts.push('', '## Project instructions (follow these)', project.instructions.trim());
+  if (memory.trim()) parts.push('', '## Project memory', 'Notes carried over from earlier chats in this project. Treat them as background; the user may have changed their mind since.', memory.trim());
+  if (files.length) {
+    parts.push('', '## Project files', `Reference material the user added to this project, stored in ${filesDir(project.id)}. Small text files are included below; open the others with the Read tool when they're relevant.`);
+    let budget = 80000;
+    const inline = [];
+    for (const f of files) {
+      parts.push(`- ${path.join(filesDir(project.id), f.name)} (${f.size.toLocaleString()} bytes)`);
+      if (f.text && f.size <= 40000 && f.size <= budget) {
+        try {
+          const content = await fsp.readFile(path.join(filesDir(project.id), f.name), 'utf8');
+          if (!content.includes('\u0000')) { inline.push(`<file name="${f.name}">\n${content}\n</file>`); budget -= f.size; }
+        } catch {}
+      }
+    }
+    if (inline.length) parts.push('', ...inline);
+  }
+  if (earlier.length) {
+    parts.push('', '## Earlier chats in this project',
+      `Plain-text copies of ${earlier.length} earlier chat${earlier.length > 1 ? 's' : ''} are in ${chatsDir(project.id)} (one .md file per chat). When the user refers to earlier work, or details beyond the memory would help, search them with Grep or open them with Read.`);
+    for (const s of earlier.slice(0, 40)) parts.push(`- ${(s.updated || '').slice(0, 10)} "${s.title.slice(0, 100)}" → ${s.id}.md`);
+    if (earlier.length > 40) parts.push(`- …and ${earlier.length - 40} more in that folder`);
+  }
+  parts.push(`</project-context>`);
+  return parts.join('\n');
+}
+
+// After a project chat replies, have Claude fold anything worth keeping into the shared memory.
+const memoryQueue = new Map();
+function queueMemoryUpdate(projectId, exchange) {
+  const prev = memoryQueue.get(projectId) || Promise.resolve();
+  const next = prev.then(() => updateMemory(projectId, exchange)).catch(e => console.error('Memory update failed:', e.message));
+  memoryQueue.set(projectId, next);
+}
+function runClaudeOnce(args, input, cwd) {
+  return new Promise(resolve => {
+    let out = '';
+    let proc;
+    try { proc = spawnClaude(args, { cwd, env: process.env }); } catch { return resolve(null); }
+    proc.stdout.setEncoding('utf8');
+    proc.stdout.on('data', d => { out += d; });
+    proc.stderr.on('data', () => {});
+    proc.on('error', () => resolve(null));
+    proc.on('close', () => { try { resolve(JSON.parse(out.trim().split('\n').pop())); } catch { resolve(null); } });
+    proc.stdin.on('error', () => {});
+    proc.stdin.end(input);
+  });
+}
+async function updateMemory(projectId, exchange) {
+  const project = store.projects[projectId];
+  if (!project || project.memoryEnabled === false) return;
+  const current = await readMemory(projectId);
+  const input = [
+    `You maintain the shared memory for a project called "${project.name}". Every new chat in the project starts by reading this memory.`,
+    `Update it using the latest exchange below. Rules:`,
+    `- Keep only durable, useful facts: decisions made, the user's preferences, key facts about the project, open tasks or next steps.`,
+    `- Write short bullet points under a few short headings. Keep the whole memory under about 400 words.`,
+    `- Remove or correct anything the new exchange makes outdated. Never store passwords, keys or other secrets.`,
+    `- Reply with ONLY the complete updated memory in Markdown, no preamble.`,
+    `- If nothing in the exchange is worth remembering, reply with exactly: NO_CHANGE`,
+    '', '<current_memory>', current.trim() || '(empty)', '</current_memory>', '', '<latest_exchange>', exchange, '</latest_exchange>',
+  ].join('\n');
+  const dir = projDir(projectId);
+  await fsp.mkdir(dir, { recursive: true });
+  let res = await runClaudeOnce(['-p', '--output-format', 'json', '--model', 'haiku'], input, dir);
+  if (!res || res.is_error) res = await runClaudeOnce(['-p', '--output-format', 'json'], input, dir);
+  // these helper runs write transcripts too; they're not chats, so remove them
+  if (res && res.session_id) { const f = await findSessionFile(res.session_id); if (f) await fsp.unlink(f).catch(() => {}); }
+  const text = res && !res.is_error && typeof res.result === 'string' ? res.result.trim() : '';
+  if (!text || text === 'NO_CHANGE' || text.length > 20000) return;
+  await fsp.writeFile(memoryFile(projectId), text.replace(/^```(?:markdown|md)?\n([\s\S]*)\n```$/, '$1') + '\n');
+  project.memoryUpdated = new Date().toISOString();
+  saveProjects();
+}
+
+/* ---------------- running chats ---------------- */
 const runs = new Map();
 
 function pushEvent(run, ev) {
@@ -209,6 +426,14 @@ function finishRun(run, code) {
   for (const l of run.listeners) l(null);
   run.listeners.clear();
   setTimeout(() => runs.delete(run.id), 10 * 60 * 1000);
+  // feed the project's shared memory
+  if (run.projectId && store.projects[run.projectId] && !run.stopped) {
+    const reply = run.events
+      .filter(e => e.kind === 'claude' && e.data.type === 'assistant' && !e.data.parent_tool_use_id)
+      .flatMap(e => ((e.data.message && e.data.message.content) || []).filter(b => b.type === 'text').map(b => b.text))
+      .join('\n\n');
+    if (reply.trim()) queueMemoryUpdate(run.projectId, `User: ${run.fullPrompt.slice(0, 6000)}\n\nClaude: ${reply.slice(-8000)}`);
+  }
 }
 
 function activeRunFor(sessionId) {
@@ -216,7 +441,7 @@ function activeRunFor(sessionId) {
   return null;
 }
 
-async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowedTools }) {
+async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowedTools, project }) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
   if (sessionId) args.push('--resume', sessionId);
   if (model) args.push('--model', model);
@@ -225,12 +450,23 @@ async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowed
   if (allowedTools && allowedTools.length) args.push('--allowedTools', allowedTools.join(','));
 
   const run = {
-    id: crypto.randomUUID(), sessionId: sessionId || null, cwd, prompt: prompt.slice(0, 200),
+    id: crypto.randomUUID(), sessionId: sessionId || null, cwd, prompt: prompt.slice(0, 200), fullPrompt: prompt,
+    projectId: project && !project.virtual ? project.id : null,
     events: [], listeners: new Set(), done: false, startSize: 0, startedAt: Date.now(),
   };
+  let input = prompt;
+  let file = null;
   if (sessionId) {
-    const f = await findSessionFile(sessionId);
-    if (f) { try { run.startSize = fs.statSync(f).size; } catch {} }
+    file = await findSessionFile(sessionId);
+    if (file) { try { run.startSize = fs.statSync(file).size; } catch {} }
+  }
+  if (project) {
+    // project context goes in once per chat, at the start (or the first time an older chat is used in the project)
+    let needs = !file;
+    if (file) { try { needs = !(await fsp.readFile(file, 'utf8')).includes('<project-context>'); } catch {} }
+    await fsp.mkdir(filesDir(project.id), { recursive: true }).catch(() => {});
+    if (needs) input = (await buildContext(project, sessionId)) + '\n\n' + prompt;
+    args.push('--add-dir', projDir(project.id));
   }
   runs.set(run.id, run);
   pushEvent(run, { kind: 'start', runId: run.id, sessionId: run.sessionId });
@@ -238,7 +474,7 @@ async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowed
 
   let proc;
   try {
-    proc = spawn(CLAUDE_BIN, args, { cwd, env: process.env, shell: IS_WIN, windowsHide: true });
+    proc = spawnClaude(args, { cwd, env: process.env });
   } catch (e) {
     pushEvent(run, { kind: 'error', text: e.message }); finishRun(run, -1); return run;
   }
@@ -252,7 +488,10 @@ async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowed
       const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
       if (!line) continue;
       let o; try { o = JSON.parse(line); } catch { pushEvent(run, { kind: 'stderr', text: line + '\n' }); continue; }
-      if (o.type === 'system' && o.subtype === 'init' && o.session_id) run.sessionId = o.session_id;
+      if (o.type === 'system' && o.subtype === 'init' && o.session_id) {
+        if (!run.sessionId && run.projectId) { meta.sessions[o.session_id] = { ...(meta.sessions[o.session_id] || {}), projectId: run.projectId }; saveMeta(); }
+        run.sessionId = o.session_id;
+      }
       pushEvent(run, { kind: 'claude', data: o });
     }
   });
@@ -267,9 +506,16 @@ async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowed
     });
     finishRun(run, -1);
   });
-  proc.on('close', code => finishRun(run, code));
+  proc.on('close', code => {
+    // cmd.exe reports a missing command as exit code 1 + a message instead of ENOENT
+    if (IS_WIN && code !== 0 && !run.events.some(e => e.kind === 'claude')) {
+      const err = run.events.filter(e => e.kind === 'stderr').map(e => e.text).join('');
+      if (/not recognized as an internal or external command/i.test(err)) pushEvent(run, { kind: 'error', text: 'Couldn\'t find the `claude` command. Install Claude Code (`npm install -g @anthropic-ai/claude-code`), then restart this app.' });
+    }
+    finishRun(run, code);
+  });
   proc.stdin.on('error', () => {});
-  proc.stdin.end(prompt);
+  proc.stdin.end(input);
   return run;
 }
 
@@ -292,10 +538,10 @@ function send(res, status, body) {
   res.end(data);
 }
 
-function readBody(req) {
+function readBody(req, limit = 4e6) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
-    req.on('data', c => { size += c.length; if (size > 4e6) { reject(new Error('Body too large')); req.destroy(); } else chunks.push(c); });
+    req.on('data', c => { size += c.length; if (size > limit) { reject(new Error('Body too large')); req.destroy(); } else chunks.push(c); });
     req.on('end', () => { try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}); } catch { reject(new Error('Invalid JSON')); } });
     req.on('error', reject);
   });
@@ -315,7 +561,7 @@ let versionCache = null;
 function claudeVersion() {
   if (versionCache) return Promise.resolve(versionCache);
   return new Promise(resolve => {
-    execFile(CLAUDE_BIN, ['--version'], { shell: IS_WIN, timeout: 10000, windowsHide: true }, (err, out) => {
+    execFile(IS_WIN ? winQuote(CLAUDE_BIN) : CLAUDE_BIN, ['--version'], { shell: IS_WIN, timeout: 10000, windowsHide: true }, (err, out) => {
       versionCache = err ? null : String(out).trim();
       resolve(versionCache);
     });
@@ -335,7 +581,35 @@ async function route(req, res) {
     });
   }
 
-  if (p === '/api/sessions' && m === 'GET') return send(res, 200, { sessions: await listSessions() });
+  if (p === '/api/sessions' && m === 'GET') {
+    const sessions = await listSessions();
+    return send(res, 200, { sessions, projects: listProjects(sessions) });
+  }
+
+  if (p === '/api/app' && m === 'GET') {
+    return send(res, 200, { desktop: !!appHooks.desktop, version: appHooks.version || null, update: appHooks.getUpdate ? appHooks.getUpdate() : null });
+  }
+  if (p === '/api/app/install-update' && m === 'POST') {
+    if (!appHooks.installUpdate) return send(res, 400, { error: 'Updates are only available in the desktop app' });
+    setTimeout(() => appHooks.installUpdate(), 200);
+    return send(res, 200, { ok: true });
+  }
+
+  if (p === '/api/projects' && m === 'POST') {
+    const body = await readBody(req);
+    const name = String(body.name || '').trim().slice(0, 120);
+    if (!name) return send(res, 400, { error: 'Give the project a name' });
+    let cwd = String(body.cwd || '').trim();
+    if (cwd.startsWith('~')) cwd = path.join(os.homedir(), cwd.slice(1));
+    if (!cwd) cwd = path.join(os.homedir(), 'Claude Projects', safeName(name));
+    try { await fsp.mkdir(cwd, { recursive: true }); } catch { return send(res, 400, { error: `Can't create folder ${cwd}` }); }
+    const now = new Date().toISOString();
+    const id = 'p-' + crypto.randomBytes(6).toString('hex');
+    store.projects[id] = { id, name, description: String(body.description || '').slice(0, 1000), instructions: String(body.instructions || ''), cwd: path.resolve(cwd), memoryEnabled: true, created: now, updated: now };
+    saveProjects();
+    await fsp.mkdir(filesDir(id), { recursive: true });
+    return send(res, 200, { project: publicProject(store.projects[id]) });
+  }
 
   let mm;
   if ((mm = p.match(/^\/api\/sessions\/([^/]+)$/))) {
@@ -354,6 +628,11 @@ async function route(req, res) {
       const cur = meta.sessions[id] || {};
       if (typeof body.title === 'string') cur.title = body.title.trim().slice(0, 200) || undefined;
       if (typeof body.pinned === 'boolean') cur.pinned = body.pinned;
+      if (typeof body.projectId === 'string' && (body.projectId === 'none' || store.projects[body.projectId] || body.projectId.startsWith('dir-'))) {
+        let pid = body.projectId;
+        if (pid.startsWith('dir-')) pid = (await getProject(pid, { create: true }) || {}).id || 'none';
+        cur.projectId = pid;
+      }
       meta.sessions[id] = cur; saveMeta();
       return send(res, 200, { ok: true });
     }
@@ -367,6 +646,77 @@ async function route(req, res) {
       });
       scanCache.delete(file); idToFile.delete(id); delete meta.sessions[id]; saveMeta();
       return send(res, 200, { ok: true, movedTo: dest });
+    }
+  }
+
+  if ((mm = p.match(/^\/api\/projects\/([A-Za-z0-9_-]{4,64})$/))) {
+    const id = mm[1];
+    if (m === 'GET') {
+      const pr = await getProject(id);
+      if (!pr) return send(res, 404, { error: 'Project not found' });
+      return send(res, 200, {
+        project: pr.virtual ? { ...pr, memoryUpdated: null, virtual: true } : publicProject(pr),
+        files: await listFiles(id), memory: await readMemory(id),
+      });
+    }
+    if (m === 'PATCH') {
+      const body = await readBody(req);
+      const pr = await getProject(id, { create: true });
+      if (!pr) return send(res, 404, { error: 'Project not found' });
+      if (typeof body.name === 'string' && body.name.trim()) pr.name = body.name.trim().slice(0, 120);
+      if (typeof body.description === 'string') pr.description = body.description.slice(0, 1000);
+      if (typeof body.instructions === 'string') pr.instructions = body.instructions.slice(0, 50000);
+      if (typeof body.memoryEnabled === 'boolean') pr.memoryEnabled = body.memoryEnabled;
+      if (typeof body.cwd === 'string' && body.cwd.trim()) {
+        let cwd = body.cwd.trim(); if (cwd.startsWith('~')) cwd = path.join(os.homedir(), cwd.slice(1));
+        try { if (!fs.statSync(cwd).isDirectory()) throw 0; } catch { return send(res, 400, { error: `Folder not found: ${cwd}` }); }
+        pr.cwd = path.resolve(cwd);
+      }
+      if (typeof body.memory === 'string') {
+        await fsp.mkdir(projDir(id), { recursive: true });
+        await fsp.writeFile(memoryFile(id), body.memory.slice(0, 20000));
+        pr.memoryUpdated = new Date().toISOString();
+      }
+      pr.updated = new Date().toISOString();
+      saveProjects();
+      return send(res, 200, { project: publicProject(pr) });
+    }
+    if (m === 'DELETE') {
+      if (!store.projects[id]) return send(res, 404, { error: 'Project not found' });
+      // chats stay where they are; the project's files and memory go to the trash folder
+      const dest = path.join(TRASH_DIR, 'projects', id + '-' + Date.now());
+      await fsp.mkdir(path.dirname(dest), { recursive: true });
+      await fsp.rename(projDir(id), dest).catch(() => {});
+      delete store.projects[id];
+      for (const k of Object.keys(meta.sessions)) if (meta.sessions[k].projectId === id) delete meta.sessions[k].projectId;
+      saveProjects(); saveMeta();
+      return send(res, 200, { ok: true });
+    }
+  }
+
+  if ((mm = p.match(/^\/api\/projects\/([A-Za-z0-9_-]{4,64})\/files(?:\/(.+))?$/))) {
+    const id = mm[1];
+    if (m === 'POST') {
+      const body = await readBody(req, 40e6);
+      const pr = await getProject(id, { create: true });
+      if (!pr) return send(res, 404, { error: 'Project not found' });
+      const dir = filesDir(id);
+      await fsp.mkdir(dir, { recursive: true });
+      let name = safeName(body.name);
+      const data = typeof body.text === 'string' ? Buffer.from(body.text, 'utf8') : Buffer.from(String(body.data || ''), 'base64');
+      if (!data.length) return send(res, 400, { error: 'That file is empty' });
+      if (data.length > 30e6) return send(res, 400, { error: 'Files can be up to 30 MB' });
+      if (typeof body.text === 'string' && !/\.[a-z0-9]+$/i.test(name)) name += '.md';
+      const ext = path.extname(name), stem = name.slice(0, name.length - ext.length);
+      for (let i = 2; fs.existsSync(path.join(dir, name)); i++) name = `${stem} (${i})${ext}`;
+      await fsp.writeFile(path.join(dir, name), data);
+      pr.updated = new Date().toISOString(); saveProjects();
+      return send(res, 200, { file: { name, size: data.length } });
+    }
+    if (m === 'DELETE' && mm[2]) {
+      const name = safeName(decodeURIComponent(mm[2]));
+      await fsp.unlink(path.join(filesDir(id), name)).catch(() => {});
+      return send(res, 200, { ok: true });
     }
   }
 
@@ -404,16 +754,31 @@ async function route(req, res) {
     if (sessionId && !ID_RE.test(sessionId)) return send(res, 400, { error: 'Bad session id' });
     if (sessionId && activeRunFor(sessionId)) return send(res, 409, { error: 'Claude is still working in this chat' });
     let cwd = body.cwd || os.homedir();
+    let project = null;
     if (sessionId) {
       const file = await findSessionFile(sessionId);
       const info = file && await scanFile({ file, projectDir: path.basename(path.dirname(file)) });
       if (info && info.cwd) cwd = info.cwd;
+      if (info) project = await getProject(projectIdFor(info));
+    } else if (body.projectId && ID_RE.test(body.projectId)) {
+      project = await getProject(body.projectId);
+      if (!project) return send(res, 404, { error: 'Project not found' });
+      cwd = project.cwd;
+      await fsp.mkdir(cwd, { recursive: true }).catch(() => {});
     }
+    else {
+      // a new chat in a folder that belongs to a project joins that project
+      const owner = Object.values(store.projects).filter(pr => path.resolve(pr.cwd) === path.resolve(cwd)).sort((a, b) => (a.created || '').localeCompare(b.created || ''))[0];
+      if (owner) project = owner;
+    }
+    // folder-only projects with nothing set up yet don't need any shared context
+    if (project && project.virtual) project = null;
+    if (project && !store.projects[project.id]) project = null;
     try { if (!fs.statSync(cwd).isDirectory()) throw 0; } catch { return send(res, 400, { error: `Folder not found: ${cwd}` }); }
     const model = body.model && MODEL_RE.test(body.model) ? body.model : null;
     const permissionMode = PERM_MODES.has(body.permissionMode) ? body.permissionMode : 'default';
     const allowedTools = (Array.isArray(body.allowedTools) ? body.allowedTools : []).filter(t => TOOL_RE.test(t));
-    const run = await startRun({ sessionId, prompt, cwd, model, permissionMode, allowedTools });
+    const run = await startRun({ sessionId, prompt, cwd, model, permissionMode, allowedTools, project });
     return send(res, 200, { runId: run.id });
   }
 
@@ -482,7 +847,11 @@ function start(port = PORT, triesLeft = 10) {
 
 function stopAll() { for (const r of runs.values()) stopRun(r); }
 
-module.exports = { start, stopAll };
+let appHooks = {};
+/** Used by the desktop app to report its version and update status. */
+function setAppHooks(h) { appHooks = h || {}; }
+
+module.exports = { start, stopAll, setAppHooks, _internal: { buildContext, getProject, listSessions, store } };
 
 // Run directly (`node server.js`): serve and open the default browser.
 if (require.main === module) {

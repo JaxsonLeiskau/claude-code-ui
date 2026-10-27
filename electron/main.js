@@ -40,6 +40,7 @@ function saveState(win) {
   } catch {}
 }
 
+const RELEASES_URL = 'https://github.com/JaxsonLeiskau/claude-code-ui/releases/latest';
 let win = null;
 let serverMod = null;
 let baseUrl = null;
@@ -64,6 +65,8 @@ function createWindow() {
   if (st.maximized) win.maximize();
 
   win.loadURL(`${baseUrl}/?shell=electron&os=${process.platform}`);
+  // the window title always reads "Claude Code", whatever the page is showing
+  win.on('page-title-updated', e => e.preventDefault());
   win.once('ready-to-show', () => win.show());
 
   // Links in Claude's answers open in your normal browser, never inside the app
@@ -79,6 +82,34 @@ function createWindow() {
   win.on('closed', () => { win = null; });
 }
 
+// Automatic updates from GitHub Releases. On Windows and Linux the new version downloads in
+// the background and installs on restart (the sidebar shows a "Restart to update" button).
+// Mac apps must be code-signed to self-update, so there the button opens the download page.
+const update = { status: 'idle', version: null, error: null };
+let updater = null;
+function setupUpdates() {
+  serverMod.setAppHooks({
+    desktop: true,
+    version: app.getVersion(),
+    getUpdate: () => update,
+    installUpdate: () => {
+      if (update.status === 'ready' && updater) { serverMod.stopAll(); setImmediate(() => updater.quitAndInstall()); }
+      else shell.openExternal(RELEASES_URL);
+    },
+  });
+  if (!app.isPackaged) return; // nothing to update when running from source
+  try { updater = require('electron-updater').autoUpdater; } catch { return; }
+  updater.autoDownload = !IS_MAC;
+  updater.autoInstallOnAppQuit = true;
+  updater.on('update-available', i => { update.version = i.version; update.status = IS_MAC ? 'available' : 'downloading'; });
+  updater.on('update-downloaded', i => { update.version = i.version; update.status = 'ready'; });
+  updater.on('update-not-available', () => { if (update.status !== 'ready') update.status = 'idle'; });
+  updater.on('error', e => { update.error = String((e && e.message) || e).slice(0, 300); if (update.status !== 'ready') update.status = 'idle'; });
+  const check = () => updater.checkForUpdates().catch(() => {});
+  setTimeout(check, 8000);
+  setInterval(check, 4 * 60 * 60 * 1000);
+}
+
 function buildMenu() {
   const send = js => win && win.webContents.executeJavaScript(js).catch(() => {});
   const template = [
@@ -90,6 +121,14 @@ function buildMenu() {
         { label: 'Search Chats', accelerator: 'CmdOrCtrl+K', click: () => send('openSearch()') },
         { type: 'separator' },
         { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => send('settingsDialog()') },
+        { label: 'Check for Updates…', click: () => {
+          if (!app.isPackaged || !updater) return shell.openExternal(RELEASES_URL);
+          updater.checkForUpdates().then(r => {
+            const latest = r && r.updateInfo && r.updateInfo.version;
+            if (!latest || latest === app.getVersion()) dialog.showMessageBox(win, { message: 'You\'re up to date', detail: `Claude Code UI ${app.getVersion()} is the latest version.` });
+            else dialog.showMessageBox(win, { message: `Version ${latest} is available`, detail: IS_MAC ? 'Opening the download page…' : 'It\'s downloading now. A "Restart to update" button will appear in the sidebar when it\'s ready.' }).then(() => { if (IS_MAC) shell.openExternal(RELEASES_URL); });
+          }).catch(e => dialog.showMessageBox(win, { type: 'warning', message: 'Couldn\'t check for updates', detail: String(e.message || e) }));
+        } },
         { type: 'separator' },
         IS_MAC ? { role: 'close' } : { role: 'quit' },
       ],
@@ -138,6 +177,7 @@ if (!app.requestSingleInstanceLock()) {
       app.quit();
       return;
     }
+    setupUpdates();
     buildMenu();
     createWindow();
     app.on('activate', () => { if (!win) createWindow(); });

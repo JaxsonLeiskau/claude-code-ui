@@ -55,6 +55,24 @@ const { start } = require('../server.js');
   });
   assert.strictEqual(status, 403, 'rejects foreign hosts');
 
+  // projects: create, add a file, instructions, and check the context every chat would get
+  const send = async (p, method, body) => {
+    const r = await fetch(base + p, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json(); assert.ok(r.ok, `${p} -> ${j.error}`); return j;
+  };
+  const { project } = await send('/api/projects', 'POST', { name: 'Homelab', description: 'My server' });
+  await send(`/api/projects/${project.id}`, 'PATCH', { instructions: 'Keep answers short.', memory: '- Uses Proxmox' });
+  await send(`/api/projects/${project.id}/files`, 'POST', { name: 'Hardware', text: 'Ryzen 5, 32 GB RAM' });
+  const pd = await get(`/api/projects/${project.id}`);
+  assert.strictEqual(pd.files[0].name, 'Hardware.md', 'stores text content as a file');
+  const { _internal } = require('../server.js');
+  const ctx = await _internal.buildContext(_internal.store.projects[project.id], null);
+  for (const want of ['Keep answers short.', 'Uses Proxmox', 'Ryzen 5, 32 GB RAM'])
+    assert.ok(ctx.includes(want), `project context includes "${want}"`);
+  const listed = (await get('/api/sessions')).projects;
+  assert.ok(listed.some(p => p.id === project.id && !p.virtual), 'lists the project');
+  assert.ok(listed.some(p => p.virtual && p.chatCount === 1), 'lists folders as projects');
+
   const page = await fetch(base + '/');
   assert.ok((await page.text()).includes('id="composer"'), 'serves the UI');
 

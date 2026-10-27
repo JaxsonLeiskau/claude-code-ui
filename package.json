@@ -1,8 +1,22 @@
 {
   "name": "claude-code-ui",
   "productName": "Claude Code UI",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "A claude.ai-style desktop app for the Claude Code CLI, with your past sessions in the sidebar.",
+  "author": "Jaxson",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JaxsonLeiskau/claude-code-ui.git"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "electron",
+    "desktop",
+    "ai",
+    "gui"
+  ],
   "main": "electron/main.js",
   "bin": {
     "claude-code-ui": "server.js"
@@ -19,7 +33,9 @@
   "engines": {
     "node": ">=18"
   },
-  "license": "MIT",
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
   "devDependencies": {
     "electron": ">=33.0.0",
     "electron-builder": ">=25.0.0"
@@ -42,6 +58,13 @@
       "target": [
         {
           "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "arm64",
             "x64"
@@ -69,15 +92,14 @@
       "category": "Development",
       "icon": "build/icon.png"
     },
-    "artifactName": "Claude-Code-UI-${version}-${os}-${arch}.${ext}"
-  },
-  "author": "Jaxson",
-  "keywords": [
-    "claude",
-    "claude-code",
-    "electron",
-    "desktop",
-    "ai",
-    "gui"
-  ]
+    "artifactName": "Claude-Code-UI-${version}-${os}-${arch}.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "JaxsonLeiskau",
+        "repo": "claude-code-ui",
+        "releaseType": "release"
+      }
+    ]
+  }
 }

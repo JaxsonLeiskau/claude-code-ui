@@ -43,6 +43,12 @@ const I = {
   flask: P('<path d="M9 3h6M10 3v6L4.5 18.5A1.8 1.8 0 0 0 6 21h12a1.8 1.8 0 0 0 1.5-2.5L14 9V3"/><path d="M7 15h10"/>'),
   link: P('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
   up: P('<path d="m6 15 6-6 6 6"/>'),
+  box: P('<path d="M12 3 3.5 7.5 12 12l8.5-4.5z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16.5 8.5 4.5 8.5-4.5"/>'),
+  upload: P('<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/>'),
+  download: P('<path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/>'),
+  note: P('<path d="M6 3h9l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M15 3v5h5M8.5 13h7M8.5 17h5"/>'),
+  brain: P('<path d="M9.5 4A3 3 0 0 0 6.6 6.3 3 3 0 0 0 4.5 11a3 3 0 0 0 .9 4.8A3.2 3.2 0 0 0 9.5 20H12V4z"/><path d="M14.5 4a3 3 0 0 1 2.9 2.3A3 3 0 0 1 19.5 11a3 3 0 0 1-.9 4.8A3.2 3.2 0 0 1 14.5 20H12"/>'),
+  move: P('<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2.5h7.5A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M10 13.5h6M13.5 11l2.5 2.5-2.5 2.5"/>'),
 };
 function applyIcons(root = document) { $$('[data-i]', root).forEach(el => { if (!el.firstChild) el.innerHTML = I[el.dataset.i] || ''; }); }
 
@@ -52,7 +58,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('ccui.' + k, JSON.stringify(v)); } catch {} },
 };
 const S = {
-  info: null, sessions: [], runs: [], loaded: false,
+  info: null, sessions: [], projects: [], runs: [], loaded: false, app: null,
   filterProject: null, query: '', searchHits: null, showAllProjects: false,
   view: null, viewToken: 0,
   settings: Object.assign({ theme: 'system', name: '', model: '', perm: 'acceptEdits', cwd: '' }, store.get('settings', {})),
@@ -129,12 +135,13 @@ function applyTheme() {
 
 /* ---------------- sidebar ---------------- */
 async function refreshSessions() {
-  try { const { sessions } = await api('/api/sessions'); S.sessions = sessions; S.loaded = true; }
+  try { const { sessions, projects } = await api('/api/sessions'); S.sessions = sessions; S.projects = projects || []; S.loaded = true; }
   catch (e) { toast('Could not load chats: ' + e.message); }
   renderSidebar();
+  if (S.view && S.view.mode === 'project' && !S.view.loading) renderProjectPage();
   if (S.view && S.view.id) {
     const s = S.sessions.find(x => x.id === S.view.id);
-    if (s) { S.view.title = s.title; S.view.pinned = s.pinned; renderHeader(); }
+    if (s) { S.view.title = s.title; S.view.pinned = s.pinned; S.view.projectId = s.projectId; renderHeader(); }
   }
 }
 
@@ -153,7 +160,7 @@ function chatItem(s, running) {
   el.className = 'sb-chat' + (S.view && S.view.id === s.id ? ' active' : '');
   el.dataset.id = s.id;
   el.title = `${s.title}\n${homeify(s.cwd)}`;
-  el.innerHTML = `${running ? `<span class="running-dot">${I.spinner}</span>` : ''}<span class="t">${esc(s.title)}</span>${!S.filterProject ? `<span class="proj-tag">${esc(baseName(s.cwd))}</span>` : ''}<button class="more" title="More">${I.dots}</button>`;
+  el.innerHTML = `${running ? `<span class="running-dot">${I.spinner}</span>` : ''}<span class="t">${esc(s.title)}</span><span class="proj-tag">${esc(projectName(s.projectId) || baseName(s.cwd))}</span><button class="more" title="More">${I.dots}</button>`;
   el.addEventListener('click', e => {
     if (e.target.closest('.more')) return;
     go(s.id);
@@ -167,49 +174,31 @@ function renderSidebar() {
   const q = S.query.trim().toLowerCase();
   const running = new Set(S.runs.map(r => r.sessionId).filter(Boolean));
   let list = S.sessions;
-  if (S.filterProject) list = list.filter(s => s.cwd === S.filterProject);
   if (q) list = list.filter(s => s.title.toLowerCase().includes(q) || (s.cwd || '').toLowerCase().includes(q) || (S.searchHits && S.searchHits.has(s.id)));
 
   // projects
   const projSec = $('#projectsSec'), projList = $('#projectList');
-  projSec.hidden = !!q || S.filterProject != null;
-  const byCwd = new Map();
-  for (const s of S.sessions) {
-    const p = byCwd.get(s.cwd) || { cwd: s.cwd, count: 0, updated: s.updated };
-    p.count++; if (s.updated > p.updated) p.updated = s.updated; byCwd.set(s.cwd, p);
-  }
-  const projects = [...byCwd.values()].sort((a, b) => b.updated.localeCompare(a.updated));
+  projSec.hidden = !!q;
   projList.innerHTML = '';
-  const shown = S.showAllProjects ? projects : projects.slice(0, 5);
+  const projects = S.projects;
+  const shown = S.showAllProjects ? projects : projects.slice(0, 6);
   for (const p of shown) {
     const el = document.createElement('div');
-    el.className = 'sb-proj';
-    el.title = homeify(p.cwd);
-    el.innerHTML = `${I.folder}<span class="t">${esc(baseName(p.cwd))}</span><span class="count">${p.count}</span><button class="add" title="New chat in ${esc(baseName(p.cwd))}">${I.plus}</button>`;
-    el.addEventListener('click', e => {
-      if (e.target.closest('.add')) { newChat(p.cwd); return; }
-      S.filterProject = p.cwd; renderSidebar(); $('#sbScroll').scrollTop = 0;
-    });
+    el.className = 'sb-proj' + (S.view && S.view.mode === 'project' && S.view.projectId === p.id ? ' active' : '');
+    el.title = p.virtual ? homeify(p.cwd) : `${p.name}\n${homeify(p.cwd)}`;
+    el.innerHTML = `${p.virtual ? I.folder : I.box}<span class="t">${esc(p.name)}</span><span class="count">${p.chatCount || ''}</span>`;
+    el.onclick = () => goProject(p.id);
     projList.appendChild(el);
   }
-  if (projects.length > 5) {
+  if (projects.length > 6) {
     const more = document.createElement('button');
     more.className = 'sb-more';
     more.textContent = S.showAllProjects ? 'Show less' : `Show all ${projects.length}`;
     more.onclick = () => { S.showAllProjects = !S.showAllProjects; renderSidebar(); };
     projList.appendChild(more);
   }
-  if (!projects.length) projList.innerHTML = `<div class="sb-empty">Folders you use with Claude Code will show up here.</div>`;
-
-  // filter chip
-  const fb = $('#filterBar');
-  fb.hidden = !S.filterProject;
-  if (S.filterProject) {
-    fb.innerHTML = `<div class="filter-chip">${I.folder}<span class="t" title="${esc(homeify(S.filterProject))}">${esc(homeify(S.filterProject))}</span><button class="icon-btn tiny" title="New chat here">${I.plus}</button><button class="icon-btn tiny" title="Clear filter">${I.x}</button></div>`;
-    const [addB, clearB] = $$('button', fb);
-    addB.onclick = () => newChat(S.filterProject);
-    clearB.onclick = () => { S.filterProject = null; renderSidebar(); };
-  }
+  if (!projects.length) projList.innerHTML = `<div class="sb-empty">Create a project to give Claude shared instructions, files and memory.</div>`;
+  $('#filterBar').hidden = true;
 
   // starred
   const starred = list.filter(s => s.pinned);
@@ -222,7 +211,7 @@ function renderSidebar() {
   $('#recentsSec .sb-label span').textContent = q ? 'Results' : 'Recents';
   const rest = list.filter(s => !s.pinned);
   // a brand-new chat that's running but not on disk yet
-  const pendingNew = S.runs.filter(r => r.sessionId && !S.sessions.some(s => s.id === r.sessionId) && (!S.filterProject || r.cwd === S.filterProject));
+  const pendingNew = S.runs.filter(r => r.sessionId && !S.sessions.some(s => s.id === r.sessionId));
   for (const r of pendingNew) rl.appendChild(chatItem({ id: r.sessionId, title: r.prompt || 'New chat', cwd: r.cwd }, true));
   let lastBucket = null;
   for (const s of rest) {
@@ -233,7 +222,7 @@ function renderSidebar() {
     rl.appendChild(chatItem(s, running.has(s.id)));
   }
   if (!rest.length && !pendingNew.length && !starred.length) {
-    rl.innerHTML = `<div class="sb-empty">${!S.loaded ? 'Loading…' : q ? 'No chats match your search.' : S.filterProject ? 'No chats in this folder yet.' : 'No Claude Code chats yet. Start one!'}</div>`;
+    rl.innerHTML = `<div class="sb-empty">${!S.loaded ? 'Loading…' : q ? 'No chats match your search.' : 'No Claude Code chats yet. Start one!'}</div>`;
   }
 }
 
@@ -241,7 +230,8 @@ function chatMenu(s, anchor) {
   showMenu(anchor, [
     { icon: 'star', label: s.pinned ? 'Unstar' : 'Star', run: () => setPinned(s.id, !s.pinned) },
     { icon: 'edit', label: 'Rename', run: () => renameDialog(s.id, s.title) },
-    { icon: 'folder', label: 'Show chats in this folder', run: () => { S.filterProject = s.cwd; renderSidebar(); } },
+    { icon: 'move', label: 'Move to project…', run: () => moveDialog(s) },
+    { icon: 'box', label: 'Open project', run: () => goProject(s.projectId) },
     { icon: 'terminal', label: 'Copy resume command', run: () => { copyText(`cd "${s.cwd}" && claude --resume ${s.id}`); toast('Copied resume command'); } },
     '-',
     { icon: 'trash', label: 'Delete', danger: true, run: () => deleteDialog(s.id, s.title) },
@@ -341,6 +331,7 @@ function settingsDialog() {
         <label class="field" style="flex:1"><span>Default permissions</span><select class="input" id="setPerm">${$('#permSel').innerHTML}</select></label>
       </div>
       <div class="about">
+        ${S.app && S.app.desktop ? `App version: <code>${esc(S.app.version || '')}</code> · updates install automatically<br>` : ''}
         Claude Code CLI: <code>${esc((S.info && S.info.version) || 'not found')}</code><br>
         Sessions are read from <code>${esc(homeify(S.info && S.info.projectsDir))}</code><br>
         Keyboard: <code>Enter</code> send · <code>Shift+Enter</code> new line · <code>${isMac ? '⌘' : 'Ctrl'}+K</code> search · <code>${isMac ? '⌘' : 'Ctrl'}+Shift+O</code> new chat · <code>Esc</code> stop
@@ -411,15 +402,25 @@ function go(id) {
   if (location.hash === target) route(); else location.hash = target;
   closeMobileSidebar();
 }
+function goProject(id) {
+  if (!id) return;
+  const target = `#/p/${id}`;
+  if (location.hash === target) route(); else location.hash = target;
+  closeMobileSidebar();
+}
 function route() {
   const m = location.hash.match(/^#\/c\/([\w-]+)/);
+  const pm = location.hash.match(/^#\/p\/([\w-]+)/);
   if (m) { if (!S.view || S.view.id !== m[1]) openSession(m[1]); }
+  else if (pm) openProject(pm[1]);
   else newChat();
 }
+const projectById = id => S.projects.find(p => p.id === id);
+const projectName = id => { const p = projectById(id); return p ? p.name : ''; };
 
 function newChat(cwd) {
   S.viewToken++;
-  S.view = { id: null, cwd: cwd || S.settings.cwd || (S.info && S.info.defaultCwd) || '', title: 'New chat', turns: [], runId: null, live: null, pinned: false };
+  S.view = { mode: 'chat', id: null, cwd: cwd || S.settings.cwd || (S.info && S.info.defaultCwd) || '', title: 'New chat', turns: [], runId: null, live: null, pinned: false };
   if (location.hash !== '#/' && location.hash !== '') history.pushState(null, '', '#/');
   renderAll();
   closeMobileSidebar();
@@ -429,7 +430,7 @@ function newChat(cwd) {
 async function openSession(id) {
   const token = ++S.viewToken;
   const s = S.sessions.find(x => x.id === id);
-  S.view = { id, cwd: s ? s.cwd : '', title: s ? s.title : 'Loading…', turns: [], runId: null, live: null, pinned: s ? s.pinned : false, loading: true };
+  S.view = { mode: 'chat', id, cwd: s ? s.cwd : '', title: s ? s.title : 'Loading…', turns: [], runId: null, live: null, pinned: s ? s.pinned : false, projectId: s ? s.projectId : null, loading: true };
   renderAll();
   let d;
   try { d = await api(`/api/sessions/${id}`); }
@@ -441,7 +442,7 @@ async function openSession(id) {
     toast(e.message); go(null); return;
   }
   if (token !== S.viewToken) return;
-  Object.assign(S.view, { cwd: d.session.cwd, title: d.session.title, pinned: d.session.pinned, turns: d.turns, loading: false });
+  Object.assign(S.view, { cwd: d.session.cwd, title: d.session.title, pinned: d.session.pinned, projectId: d.session.projectId, turns: d.turns, loading: false });
   renderAll();
   scrollToBottom(true);
   if (d.run) attach(d.run.id, token);
@@ -795,10 +796,16 @@ setInterval(() => {
 /* ---------------- header / composer ---------------- */
 function renderHeader() {
   const v = S.view;
-  $('#chatTitle').textContent = v ? v.title : '';
-  document.title = v && v.id ? `${v.title} · Claude Code` : 'Claude Code';
+  const isProj = v && v.mode === 'project';
+  $('#chatTitle').textContent = v && !isProj ? v.title : '';
+  $('#titleBtn').hidden = !!isProj;
+  document.title = 'Claude Code';
+  const crumb = $('#crumbBtn');
+  const proj = v && !isProj && v.id && projectById(v.projectId);
+  crumb.hidden = !proj;
+  if (proj) { crumb.innerHTML = `${proj.virtual ? I.folder : I.box}<span>${esc(proj.name)}</span><span class="sep">/</span>`; crumb.title = `Open ${proj.name}`; }
   const chip = $('#cwdChip');
-  chip.textContent = v && v.id && v.cwd ? homeify(v.cwd) : '';
+  chip.textContent = v && v.id && v.cwd && !isProj ? homeify(v.cwd) : '';
   chip.title = v ? v.cwd : '';
   const sb = $('#starBtn');
   sb.hidden = !(v && v.id);
@@ -815,17 +822,17 @@ function renderComposerState() {
   sendBtn.title = running ? 'Stop (Esc)' : 'Send (Enter)';
   sendBtn.disabled = !running && !$('#input').value.trim();
   const fb = $('#folderBtn');
-  const locked = !!(v && (v.id || v.turns.length));
+  const locked = !!(v && (v.id || v.turns.length || v.mode === 'project'));
   fb.classList.toggle('locked', locked);
   fb.title = locked ? `Working in ${v.cwd}` : 'Choose working folder';
   $('#folderLabel').textContent = v ? (baseName(v.cwd) || homeify(v.cwd) || 'Choose folder') : '';
   $('#permSel').closest('.pill').classList.toggle('perm-bypass', $('#permSel').value === 'bypassPermissions');
-  $('#input').placeholder = v && v.turns.length ? 'Reply to Claude…' : 'How can I help you today?';
+  $('#input').placeholder = v && v.mode === 'project' ? `Start a chat in ${v.project ? v.project.name : 'this project'}…` : v && v.turns.length ? 'Reply to Claude…' : 'How can I help you today?';
 }
 
 function updateEmpty() {
   const v = S.view;
-  const empty = !v || (!v.id && !v.turns.length && !v.loading);
+  const empty = !v || (v.mode !== 'project' && !v.id && !v.turns.length && !v.loading);
   $('#main').classList.toggle('empty', empty);
   if (empty) $('#greeting').textContent = greeting();
 }
@@ -838,11 +845,265 @@ function updateProfile() {
 }
 
 function renderAll() {
+  const proj = !!(S.view && S.view.mode === 'project');
+  $('#main').classList.toggle('project-mode', proj);
+  $('#projectPage').hidden = !proj;
+  if (proj) renderProjectPage(); else placeComposer();
   renderHeader();
   renderThread();
   renderComposerState();
   renderSidebar();
   updateEmpty();
+}
+
+/* ---------------- projects ---------------- */
+function ago(iso) {
+  if (!iso) return '';
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) { const h = Math.floor(s / 3600); return `${h} hour${h > 1 ? 's' : ''} ago`; }
+  const d = Math.floor(s / 86400);
+  if (d < 30) return `${d} day${d > 1 ? 's' : ''} ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: d > 300 ? 'numeric' : undefined });
+}
+const fmtSize = n => n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+
+// One composer element is shared: it sits at the bottom of chats and at the top of project pages
+function placeComposer() {
+  const c = $('#composer'), slot = $('#projComposerSlot');
+  if (S.view && S.view.mode === 'project' && slot) { if (c.parentElement !== slot) slot.appendChild(c); }
+  else if (c.parentElement !== $('#dock')) $('#dock').insertBefore(c, $('#suggestions'));
+}
+
+async function openProject(id) {
+  const token = ++S.viewToken;
+  const known = projectById(id);
+  S.view = { mode: 'project', projectId: id, id: null, cwd: known ? known.cwd : '', title: known ? known.name : '', turns: [], runId: null, live: null, project: known || null, files: [], memory: '', loading: !known };
+  renderAll();
+  if (!known) $('#projectPage').innerHTML = '<div class="pp"><div class="pp-main"><div class="skeleton" style="width:40%;height:28px"></div><div class="skeleton"></div></div></div>';
+  await loadProject(token);
+  $('#input').focus();
+}
+async function loadProject(token = S.viewToken) {
+  const v = S.view;
+  let d;
+  try { d = await api(`/api/projects/${v.projectId}`); }
+  catch (e) { if (token === S.viewToken) { toast(e.message); go(null); } return; }
+  if (token !== S.viewToken) return;
+  Object.assign(v, { project: d.project, files: d.files, memory: d.memory, cwd: d.project.cwd, title: d.project.name, loading: false });
+  renderProjectPage();
+  renderComposerState();
+}
+async function patchProject(body) {
+  const v = S.view;
+  await api(`/api/projects/${v.projectId}`, { method: 'PATCH', body });
+  await Promise.all([loadProject(), refreshSessions()]);
+}
+
+function renderProjectPage() {
+  const v = S.view, pg = $('#projectPage');
+  if (!v || v.mode !== 'project' || !v.project) return;
+  $('#dock').insertBefore($('#composer'), $('#suggestions')); // park it while the page is rebuilt
+  const p = v.project;
+  const chats = S.sessions.filter(s => s.projectId === p.id);
+  const running = new Set(S.runs.map(r => r.sessionId));
+  const memOn = p.memoryEnabled !== false;
+  const fileIcon = name => { const e = (name.split('.').pop() || '').slice(0, 4).toUpperCase(); return e && e.length <= 4 && name.includes('.') ? e : 'FILE'; };
+  pg.innerHTML = `
+  <div class="pp">
+    <div class="pp-main">
+      <div class="pp-head">
+        <div class="pp-titles">
+          <div class="pp-kicker">${p.virtual ? I.folder + 'Folder' : I.box + 'Project'}</div>
+          <h1>${esc(p.name)}</h1>
+          ${p.description ? `<p class="pp-desc">${esc(p.description)}</p>` : `<button class="pp-link" data-act="details">Add a description</button>`}
+        </div>
+        <button class="icon-btn" data-act="more" title="Project options">${I.dots}</button>
+      </div>
+      ${p.virtual ? `<div class="pp-hint">${I.box}<span>You've used Claude Code in this folder. Add instructions, files or memory and it becomes a full project that every chat here shares.</span></div>` : ''}
+      <div id="projComposerSlot"></div>
+      <div class="pp-chats">
+        ${chats.length ? `<div class="pp-chats-head">${chats.length} chat${chats.length > 1 ? 's' : ''}</div>` : ''}
+        ${chats.map(s => `<button class="pp-chat" data-id="${esc(s.id)}"><span class="t">${running.has(s.id) ? `<span class="running-dot">${I.spinner}</span>` : ''}${esc(s.title)}</span><span class="when">Last message ${esc(ago(s.updated))}</span></button>`).join('')
+          || `<div class="pp-empty">No chats yet. Every chat you start here shares this project's instructions, files and memory.</div>`}
+      </div>
+    </div>
+    <aside class="pp-side">
+      <section class="pp-card">
+        <div class="pp-card-head"><h3>Instructions</h3><button class="pp-link" data-act="instr">${p.instructions ? 'Edit' : 'Add'}</button></div>
+        <div class="pp-card-body ${p.instructions ? 'clamp pre' : 'muted'}" data-act="instr">${p.instructions ? esc(p.instructions) : 'Tell Claude how to work in this project — tone, tech stack, rules it should always follow.'}</div>
+      </section>
+      <section class="pp-card">
+        <div class="pp-card-head"><h3>${I.brain}Memory</h3><button class="pp-link" data-act="mem">${v.memory.trim() ? 'View & edit' : 'Edit'}</button></div>
+        <div class="pp-card-sub">${!memOn ? 'Automatic updates are off' : p.virtual ? 'Starts once this folder is a project' : p.memoryUpdated ? `Updated ${esc(ago(p.memoryUpdated))}` : 'Claude updates this after each chat'}</div>
+        <div class="pp-card-body ${v.memory.trim() ? 'clamp prose-sm' : 'muted'}" data-act="mem">${v.memory.trim() ? window.renderMarkdown(v.memory) : 'Important decisions, facts and preferences from your chats will collect here, and every new chat starts with them.'}</div>
+      </section>
+      <section class="pp-card">
+        <div class="pp-card-head"><h3>Files</h3><button class="icon-btn tiny" data-act="addfile" title="Add files">${I.plus}</button></div>
+        ${v.files.length ? `<div class="pp-files">${v.files.map(f => `
+          <div class="pp-file" title="${esc(f.name)} · ${fmtSize(f.size)}"><span class="ext">${esc(fileIcon(f.name))}</span><span class="n">${esc(f.name)}</span><span class="sz">${fmtSize(f.size)}</span><button class="icon-btn tiny" data-del="${esc(f.name)}" title="Remove">${I.x}</button></div>`).join('')}</div>`
+          : `<div class="pp-drop" data-act="upload">${I.upload}<span>Add PDFs, docs, code or notes Claude should know about. Drop files here or click to upload.</span></div>`}
+        <div class="pp-file-actions"><button class="btn small" data-act="upload">${I.upload}Upload</button><button class="btn small" data-act="text">${I.note}Add text</button></div>
+      </section>
+      <section class="pp-card compact">
+        <div class="pp-card-head"><h3>Folder</h3><button class="pp-link" data-act="folder">Change</button></div>
+        <div class="pp-path" title="${esc(p.cwd)}">${esc(homeify(p.cwd))}</div>
+      </section>
+    </aside>
+  </div>`;
+  placeComposer();
+  pg.querySelectorAll('[data-act]').forEach(el => el.addEventListener('click', e => {
+    const act = el.dataset.act;
+    if (act === 'details') projectDialog(p);
+    else if (act === 'more') showMenu(el, [
+      { icon: 'edit', label: 'Edit details', run: () => projectDialog(p) },
+      { icon: 'terminal', label: 'Copy folder path', run: () => { copyText(p.cwd); toast('Copied folder path'); } },
+      ...(p.virtual ? [] : ['-', { icon: 'trash', label: 'Delete project', danger: true, run: () => deleteProjectDialog(p) }]),
+    ]);
+    else if (act === 'instr') instructionsDialog(p);
+    else if (act === 'mem') memoryDialog(p, v.memory);
+    else if (act === 'addfile') showMenu(el, [
+      { icon: 'upload', label: 'Upload files', run: () => $('#fileInput').click() },
+      { icon: 'note', label: 'Add text content', run: () => textFileDialog() },
+    ]);
+    else if (act === 'upload') $('#fileInput').click();
+    else if (act === 'text') textFileDialog();
+    else if (act === 'folder') folderPicker(p.cwd, path => patchProject({ cwd: path }).catch(err => toast(err.message)));
+  }));
+  pg.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
+    await api(`/api/projects/${p.id}/files/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' }).catch(e => toast(e.message));
+    loadProject();
+  }));
+  pg.querySelectorAll('.pp-chat').forEach(b => b.addEventListener('click', () => go(b.dataset.id)));
+}
+
+async function uploadFiles(files) {
+  const v = S.view;
+  if (!v || v.mode !== 'project') return;
+  const read = f => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = rej; r.readAsDataURL(f); });
+  let n = 0;
+  for (const f of files) {
+    if (f.size > 30e6) { toast(`${f.name} is over 30 MB`); continue; }
+    toast(`Uploading ${f.name}…`);
+    try { await api(`/api/projects/${v.projectId}/files`, { method: 'POST', body: { name: f.name, data: await read(f) } }); n++; }
+    catch (e) { toast(`${f.name}: ${e.message}`); }
+  }
+  if (n) toast(`Added ${n} file${n > 1 ? 's' : ''}`);
+  await Promise.all([loadProject(), refreshSessions()]);
+}
+
+function projectDialog(p) {
+  const editing = !!p;
+  const m = modal({
+    title: editing ? 'Edit project' : 'New project',
+    body: `
+      <label class="field"><span>Name</span><input class="input" id="pjName" maxlength="120" value="${esc(p ? p.name : '')}" placeholder="e.g. Homelab server"></label>
+      <label class="field"><span>Description <small>(optional)</small></span><input class="input" id="pjDesc" maxlength="1000" value="${esc(p ? p.description : '')}" placeholder="What is this project about?"></label>
+      <label class="field"><span>Folder Claude works in</span>
+        <div class="input-row"><input class="input mono" id="pjCwd" value="${esc(p ? p.cwd : '')}" placeholder="New folder in ~/Claude Projects"><button class="btn" id="pjBrowse" type="button">Browse</button></div>
+        <small>${editing ? 'Chats in this project read and write files here.' : 'Pick a code folder, or leave empty for a fresh one in your Claude Projects folder.'}</small>
+      </label>`,
+    foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="pjSave">${editing ? 'Save' : 'Create project'}</button>`,
+  });
+  const name = $('#pjName', m.el); name.focus();
+  $('#pjBrowse', m.el).onclick = () => folderPicker($('#pjCwd', m.el).value || (p && p.cwd), path => { $('#pjCwd', m.el).value = path; });
+  const save = async () => {
+    const body = { name: name.value.trim(), description: $('#pjDesc', m.el).value.trim(), cwd: $('#pjCwd', m.el).value.trim() };
+    if (!body.name) { name.focus(); return; }
+    try {
+      if (editing) { if (!body.cwd) delete body.cwd; await patchProject(body); m.close(); }
+      else { const r = await api('/api/projects', { method: 'POST', body }); m.close(); await refreshSessions(); goProject(r.project.id); }
+    } catch (e) { toast(e.message); }
+  };
+  $('#pjSave', m.el).onclick = save;
+  name.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
+}
+
+function instructionsDialog(p) {
+  const m = modal({
+    title: 'Project instructions', wide: true,
+    body: `<p>Claude follows these in every chat in <strong>${esc(p.name)}</strong>.</p>
+      <textarea class="input area" id="insText" rows="12" placeholder="e.g. Keep answers short. The server runs Ubuntu 24.04 with Docker. Ask before deleting anything.">${esc(p.instructions || '')}</textarea>`,
+    foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="insSave">Save instructions</button>`,
+  });
+  const ta = $('#insText', m.el); ta.focus();
+  $('#insSave', m.el).onclick = async () => { try { await patchProject({ instructions: ta.value }); m.close(); toast('Instructions saved — new chats will use them'); } catch (e) { toast(e.message); } };
+}
+
+function memoryDialog(p, memory) {
+  const m = modal({
+    title: 'Project memory', wide: true,
+    body: `<p>Every new chat in <strong>${esc(p.name)}</strong> starts with this. Claude keeps it up to date as you chat; you can edit it any time.</p>
+      <textarea class="input area mono" id="memText" rows="14" placeholder="Nothing remembered yet.">${esc(memory || '')}</textarea>
+      <label class="check"><input type="checkbox" id="memAuto" ${p.memoryEnabled !== false ? 'checked' : ''}> Update memory automatically after each chat</label>`,
+    foot: `<button class="btn" id="memClear" style="margin-right:auto">Clear</button><button class="btn" data-close>Cancel</button><button class="btn primary" id="memSave">Save</button>`,
+  });
+  $('#memClear', m.el).onclick = () => { $('#memText', m.el).value = ''; };
+  $('#memSave', m.el).onclick = async () => {
+    try { await patchProject({ memory: $('#memText', m.el).value, memoryEnabled: $('#memAuto', m.el).checked }); m.close(); toast('Memory saved'); }
+    catch (e) { toast(e.message); }
+  };
+}
+
+function textFileDialog() {
+  const m = modal({
+    title: 'Add text content', wide: true,
+    body: `<label class="field"><span>Title</span><input class="input" id="txName" placeholder="e.g. Network layout"></label>
+      <label class="field"><span>Content</span><textarea class="input area" id="txBody" rows="12" placeholder="Paste notes, docs, configs…"></textarea></label>`,
+    foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="txSave">Add to project</button>`,
+  });
+  $('#txName', m.el).focus();
+  $('#txSave', m.el).onclick = async () => {
+    const text = $('#txBody', m.el).value;
+    if (!text.trim()) { $('#txBody', m.el).focus(); return; }
+    try {
+      await api(`/api/projects/${S.view.projectId}/files`, { method: 'POST', body: { name: $('#txName', m.el).value.trim() || 'Notes', text } });
+      m.close(); await Promise.all([loadProject(), refreshSessions()]);
+    } catch (e) { toast(e.message); }
+  };
+}
+
+function deleteProjectDialog(p) {
+  const m = modal({
+    title: 'Delete project?',
+    body: `<p>“${esc(p.name)}” and its instructions, files and memory will be removed. Its chats stay in your history, and the folder <code>${esc(homeify(p.cwd))}</code> isn't touched.</p>`,
+    foot: `<button class="btn" data-close>Cancel</button><button class="btn danger" id="pdGo">Delete project</button>`,
+  });
+  $('#pdGo', m.el).onclick = async () => {
+    try { await api(`/api/projects/${p.id}`, { method: 'DELETE' }); } catch (e) { toast(e.message); return; }
+    m.close(); await refreshSessions(); go(null); toast('Project deleted');
+  };
+}
+
+function moveDialog(s) {
+  const opts = S.projects.map(p => `<button class="pick ${p.id === s.projectId ? 'on' : ''}" data-id="${esc(p.id)}">${p.virtual ? I.folder : I.box}<span>${esc(p.name)}</span><small>${esc(homeify(p.cwd))}</small></button>`).join('');
+  const m = modal({
+    title: 'Move to project',
+    body: `<p>The chat will share that project's instructions, files and memory from its next message. It keeps working in its current folder.</p>
+      <div class="pick-list">${opts}<button class="pick" data-id="none">${I.x}<span>No project</span></button></div>`,
+  });
+  m.el.querySelectorAll('.pick').forEach(b => b.onclick = async () => {
+    try { await api(`/api/sessions/${s.id}`, { method: 'PATCH', body: { projectId: b.dataset.id } }); m.close(); await refreshSessions(); toast('Chat moved'); }
+    catch (e) { toast(e.message); }
+  });
+}
+
+/* ---------------- desktop app updates ---------------- */
+async function checkApp() {
+  try { S.app = await api('/api/app'); } catch { return; }
+  const u = S.app && S.app.update;
+  const btn = $('#updateBtn');
+  const ready = u && (u.status === 'ready' || u.status === 'available');
+  btn.hidden = !ready;
+  if (ready) {
+    $('#updateLabel').textContent = u.status === 'ready' ? `Restart to update to ${u.version}` : `Update ${u.version} available`;
+    btn.title = u.status === 'ready' ? 'Installs the new version and reopens the app' : 'Opens the download page';
+  }
+}
+async function installUpdate() {
+  if (S.runs.length && !confirm('Claude is still working in a chat. Restart and update anyway?')) return;
+  try { await api('/api/app/install-update', { method: 'POST' }); toast('Updating…'); } catch (e) { toast(e.message); }
 }
 
 /* ---------------- sending ---------------- */
@@ -857,10 +1118,11 @@ async function send(text) {
   try {
     const r = await api('/api/chat', {
       method: 'POST',
-      body: { sessionId: v.id, prompt: text, cwd: v.cwd, model: $('#modelSel').value, permissionMode: $('#permSel').value, allowedTools: S.allowed[v.id || 'new'] || [] },
+      body: { sessionId: v.id, projectId: !v.id && v.mode === 'project' ? v.projectId : undefined, prompt: text, cwd: v.cwd, model: $('#modelSel').value, permissionMode: $('#permSel').value, allowedTools: S.allowed[v.id || 'new'] || [] },
     });
     if (token !== S.viewToken) return;
-    if (!v.id && S.settings.cwd !== v.cwd) { /* remember last-used folder */ S.settings.cwd = v.cwd; saveSettings(); }
+    if (v.mode === 'project') { v.mode = 'chat'; v.title = 'New chat'; renderAll(); }
+    if (!v.id && !v.projectId && S.settings.cwd !== v.cwd) { /* remember last-used folder */ S.settings.cwd = v.cwd; saveSettings(); }
     attach(r.runId, token);
     setTimeout(refreshRuns, 600);
     scrollToBottom(true);
@@ -920,7 +1182,11 @@ function bind() {
   $('#collapseBtn').onclick = () => toggleCollapse();
   $('#openSidebarBtn').onclick = () => $('#app').classList.add('mobile-open');
   $('#scrim').onclick = closeMobileSidebar;
-  $('#newChatBtn').onclick = () => newChat(S.filterProject || undefined);
+  $('#newChatBtn').onclick = () => newChat();
+  $('#newProjectBtn').onclick = e => { e.stopPropagation(); projectDialog(); };
+  $('#crumbBtn').onclick = () => S.view && goProject(S.view.projectId);
+  $('#updateBtn').onclick = installUpdate;
+  $('#fileInput').addEventListener('change', e => { const f = [...e.target.files]; e.target.value = ''; if (f.length) uploadFiles(f); });
   $('#searchBtn').onclick = openSearch;
   $('#searchClear').onclick = closeSearch;
   $('#searchInput').addEventListener('input', e => {
@@ -970,6 +1236,12 @@ function bind() {
     b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1400);
   });
 
+  // drop files onto a project page to add them
+  const pp = $('#projectPage');
+  pp.addEventListener('dragover', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); pp.classList.add('dragging'); } });
+  pp.addEventListener('dragleave', e => { if (e.target === pp || !pp.contains(e.relatedTarget)) pp.classList.remove('dragging'); });
+  pp.addEventListener('drop', e => { e.preventDefault(); pp.classList.remove('dragging'); const f = [...(e.dataTransfer.files || [])]; if (f.length) uploadFiles(f); });
+
   const sc = $('#scroller');
   sc.addEventListener('scroll', () => { $('#jumpBtn').hidden = nearBottom(); }, { passive: true });
   $('#jumpBtn').onclick = () => { sc.scrollTo({ top: sc.scrollHeight, behavior: 'smooth' }); };
@@ -1005,6 +1277,7 @@ async function init() {
   await Promise.all([refreshSessions(), refreshRuns()]);
   route();
   setInterval(refreshRuns, 2500);
+  checkApp(); setInterval(checkApp, 60000);
   setInterval(() => { if (!S.runs.length) refreshSessions(); }, 20000);
   window.addEventListener('focus', () => refreshSessions());
 }

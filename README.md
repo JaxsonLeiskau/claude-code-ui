@@ -5,7 +5,7 @@
 # Claude Code UI
 
 **A clean, claude.ai-style desktop app for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview).**
-All your past Claude Code sessions in a sidebar, live tool output, and one-click permissions — no terminal required.
+All your past Claude Code sessions in a sidebar, claude.ai-style Projects with shared memory, live tool output, and one-click permissions — no terminal required.
 
 [**Download**](../../releases/latest) · [Features](#features) · [Build from source](#build-from-source) · [How it works](#how-it-works)
 
@@ -18,6 +18,7 @@ All your past Claude Code sessions in a sidebar, live tool output, and one-click
 
 ## Features
 
+- **Projects, like on claude.ai** — give a project instructions, reference files and a working folder, and every chat in it shares them. Claude keeps a **shared project memory** (decisions, preferences, key facts) up to date after each chat, and can search the full text of the project's earlier chats when it needs more detail. Every folder you've used Claude Code in shows up as a project automatically.
 - **Your whole history, organized** — reads the transcripts Claude Code already saves in `~/.claude/projects`, so chats you started in the terminal show up too. Grouped into Today / Yesterday / Previous 7 days, with a **Projects** list of every folder you've used, plus **Starred** chats.
 - **Search** across chat titles and the full text of every message (`Ctrl/⌘+K`).
 - **Live streaming** replies with readable tool cards: shell commands with output, file edits as red/green diffs, to-do lists, sub-agents, web fetches.
@@ -27,6 +28,8 @@ All your past Claude Code sessions in a sidebar, live tool output, and one-click
 - Rename, star and delete chats. Deleted transcripts go to `~/.claude-code-ui/trash`, never erased.
 - Light, dark and system themes, collapsible sidebar, and a phone-sized layout.
 - Works with `claude --resume`: every chat has a **Copy resume command** to continue it in the terminal.
+
+<img src="docs/screenshot-project.png" alt="A project page with instructions, memory and files" width="860">
 
 <table>
 <tr>
@@ -50,6 +53,8 @@ All your past Claude Code sessions in a sidebar, live tool output, and one-click
    - **Windows:** `Claude-Code-UI-…-win-x64.exe`. If Windows shows *"Windows protected your PC"*, click **More info → Run anyway** (the app isn't signed with a paid certificate).
    - **Mac:** the `.dmg` for your chip (`arm64` for Apple Silicon, `x64` for Intel). Drag the app into Applications; the first time, right-click it → **Open** → **Open**.
    - **Linux:** the `.AppImage`. Make it executable (`chmod +x`) and run it.
+
+**Updates install themselves.** The app checks GitHub for new versions; on Windows and Linux it downloads them in the background and a **Restart to update** button appears at the bottom of the sidebar (or the update installs the next time you quit). On Mac the button opens the download page, since only code-signed Mac apps can update themselves. You can also use **File → Check for Updates…**
 
 ## Build from source
 
@@ -76,7 +81,9 @@ git tag v1.2.0
 git push origin v1.2.0
 ```
 
-GitHub Actions builds the Windows, Mac and Linux installers and attaches them to a new release automatically.
+GitHub Actions builds the Windows, Mac and Linux installers and attaches them to a new release automatically, and installed copies of the app update themselves to it.
+
+If you run from source, `git pull` gets the latest code.
 
 ## How it works
 
@@ -92,7 +99,8 @@ GitHub Actions builds the Windows, Mac and Linux installers and attaches them to
 - **Messages** run `claude` in headless mode in the chat's folder, streaming its events into the window.
 - The server only listens on `127.0.0.1` and rejects requests from other hosts or websites, since it can run Claude with tool access.
 - Headless mode can't pause to ask for approval mid-task, so tool permissions are chosen up front (or granted afterwards with **Allow & continue**).
-- No dependencies at runtime — the server and UI are plain Node and vanilla JavaScript. Electron is only used for the desktop window.
+- **Projects** live in `~/.claude-code-ui/projects/<id>/` (`files/`, `memory.md`, and `chats/` with plain-text copies of the project's chats). The first message of each project chat carries the instructions, memory, small text files inline, and a list of earlier chats; the folder is shared with Claude via `--add-dir` so it can read the rest. After each reply, a short background Claude call folds anything worth keeping into `memory.md`.
+- The server and UI are plain Node and vanilla JavaScript with no dependencies. The desktop app adds Electron and `electron-updater`.
 
 ### Options
 
@@ -120,8 +128,8 @@ Environment variables, mostly useful with `npm run web`:
 ## Project layout
 
 ```
-server.js            local API + runs the claude CLI
-electron/main.js     desktop window, menu, PATH fix-up
+server.js            local API, projects, runs the claude CLI
+electron/main.js     desktop window, menu, auto-updates, PATH fix-up
 public/              the UI (index.html, app.js, style.css, md.js)
 scripts/             smoke test
 build/icon.png       app icon

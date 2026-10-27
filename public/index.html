@@ -31,7 +31,7 @@
 
     <div class="sb-scroll" id="sbScroll">
       <section class="sb-section" id="projectsSec">
-        <div class="sb-label"><span>Projects</span></div>
+        <div class="sb-label"><span>Projects</span><button class="icon-btn tiny" id="newProjectBtn" title="New project" data-i="plus"></button></div>
         <div id="projectList"></div>
       </section>
       <div id="filterBar" hidden></div>
@@ -46,6 +46,7 @@
     </div>
 
     <div class="sb-foot">
+      <button class="update-btn" id="updateBtn" hidden><span data-i="download"></span><span class="label" id="updateLabel">Restart to update</span></button>
       <button class="profile" id="settingsBtn" title="Settings">
         <span class="avatar" id="avatar">?</span>
         <span class="label profile-text"><span class="name" id="profileName">You</span><span class="sub" id="cliVersion">Claude Code</span></span>
@@ -58,12 +59,16 @@
   <main id="main" class="empty">
     <header id="topbar">
       <button class="icon-btn mobile-only" id="openSidebarBtn" title="Open sidebar" data-i="panel"></button>
+      <button class="crumb" id="crumbBtn" hidden></button>
       <button class="title-btn" id="titleBtn" title="Chat options"><span id="chatTitle">New chat</span><span class="chev" data-i="chevron"></span></button>
       <div class="top-right">
         <span class="chip" id="cwdChip" title=""></span>
         <button class="icon-btn" id="starBtn" title="Star" data-i="star" hidden></button>
       </div>
     </header>
+
+    <div id="projectPage" hidden></div>
+    <input type="file" id="fileInput" multiple hidden>
 
     <div id="scroller">
       <div id="thread" aria-live="polite"></div>

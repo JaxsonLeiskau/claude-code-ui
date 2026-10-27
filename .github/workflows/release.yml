@@ -1,7 +1,8 @@
 name: Build installers
 
-# Push a tag like v1.2.0 to build Windows, Mac and Linux installers and
-# attach them to a GitHub Release. Can also be run by hand from the Actions tab.
+# Push a tag like v1.2.0 to build Windows, Mac and Linux installers and attach them
+# to a GitHub Release. Installed copies of the app pick the new version up automatically.
+# Can also be run by hand from the Actions tab (that builds without publishing).
 on:
   push:
     tags: ['v*']
@@ -32,10 +33,15 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: installer-${{ matrix.os }}
+          # installers, plus the latest*.yml / .blockmap / .zip files the app's
+          # auto-updater reads to find and download new versions
           path: |
             dist/*.exe
             dist/*.dmg
+            dist/*.zip
             dist/*.AppImage
+            dist/*.blockmap
+            dist/latest*.yml
           if-no-files-found: error
 
   release:
