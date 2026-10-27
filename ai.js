@@ -93,6 +93,12 @@ function debateParticipants() {
 }
 
 async function httpError(res) {
+  const e = await rawHttpError(res);
+  if (/no longer available|not found|does not exist|deprecated|not supported|unknown model|invalid model/i.test(e.message) && /model/i.test(e.message))
+    e.message += '\n\nPick a different model in Settings → AI models (press Connect to see the current list).';
+  return e;
+}
+async function rawHttpError(res) {
   let msg = `${res.status} ${res.statusText}`;
   try {
     const t = await res.text();
@@ -130,9 +136,11 @@ function suggest(id, models) {
     return main.sort((a, b) => ver(b) - ver(a))[0] || ids[0] || '';
   }
   if (id === 'gemini') {
-    const pro = ids.filter(m => /^gemini-[\d.]+-pro$/.test(m)).sort((a, b) => ver(b) - ver(a));
-    const flash = ids.filter(m => /^gemini-[\d.]+-flash$/.test(m)).sort((a, b) => ver(b) - ver(a));
-    return pro[0] || flash[0] || ids[0] || '';
+    // newest version wins, even a "-preview" (Google retires older models for new users first);
+    // at the same version a stable model beats its preview
+    const pick = kind => ids.filter(m => new RegExp(`^gemini-[\\d.]+-${kind}(-preview)?$`).test(m))
+      .sort((a, b) => ver(b) - ver(a) || /preview/.test(a) - /preview/.test(b))[0];
+    return pick('pro') || pick('flash') || ids[0] || '';
   }
   return ids[0] || '';
 }

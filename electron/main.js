@@ -127,7 +127,14 @@ function buildMenu() {
             const latest = r && r.updateInfo && r.updateInfo.version;
             if (!latest || latest === app.getVersion()) dialog.showMessageBox(win, { message: 'You\'re up to date', detail: `Roundtable ${app.getVersion()} is the latest version.` });
             else dialog.showMessageBox(win, { message: `Version ${latest} is available`, detail: IS_MAC ? 'Opening the download page…' : 'It\'s downloading now. A "Restart to update" button will appear in the sidebar when it\'s ready.' }).then(() => { if (IS_MAC) shell.openExternal(RELEASES_URL); });
-          }).catch(e => dialog.showMessageBox(win, { type: 'warning', message: 'Couldn\'t check for updates', detail: String(e.message || e) }));
+          }).catch(e => {
+            const raw = String((e && e.message) || e);
+            const why = /ENOTFOUND|ECONNREFUSED|ETIMEDOUT|ECONNRESET|network/i.test(raw) ? 'Your computer seems to be offline, or GitHub can\'t be reached right now.'
+              : /\b404\b/.test(raw) ? 'The update page on GitHub wasn\'t found. If the project was renamed or made private, updates can\'t be checked.'
+              : 'Something went wrong talking to GitHub.';
+            dialog.showMessageBox(win, { type: 'warning', message: 'Couldn\'t check for updates', detail: `${why}\n\nYou can always download the latest version from the Releases page.`, buttons: ['OK', 'Open Releases page', 'Show details'], defaultId: 0 })
+              .then(r => { if (r.response === 1) shell.openExternal(RELEASES_URL); if (r.response === 2) dialog.showMessageBox(win, { message: 'Error details', detail: raw.slice(0, 2000) }); });
+          });
         } },
         { type: 'separator' },
         IS_MAC ? { role: 'close' } : { role: 'quit' },
