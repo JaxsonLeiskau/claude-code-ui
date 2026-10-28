@@ -87,7 +87,7 @@ const { start } = require('../server.js');
   assert.ok((await page.text()).includes('id="composer"'), 'serves the UI');
 
   console.log('✓ all smoke tests passed');
-  fs.rmSync(tmp, { recursive: true, force: true });
+  try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} // Windows may still hold the folder briefly
   process.exit(0);
 })().catch(e => {
   console.error('✗', e.message);
