@@ -89,4 +89,8 @@ const { start } = require('../server.js');
   console.log('✓ all smoke tests passed');
   fs.rmSync(tmp, { recursive: true, force: true });
   process.exit(0);
-})().catch(e => { console.error('✗', e.message); process.exit(1); });
+})().catch(e => {
+  console.error('✗', e.message);
+  if (process.env.GITHUB_ACTIONS) console.log(`::error title=Smoke test::${String(e.stack || e.message).replace(/\r?\n/g, '%0A')}`);
+  process.exit(1);
+});

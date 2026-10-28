@@ -94,7 +94,11 @@ function device(name, port) {
   }
 
   console.log('✓ integration tests passed (models, debate, two-device sync)');
-})().then(() => 0, e => { console.error('✗', e.stack || e.message); return 1; }).then(code => {
+})().then(() => 0, e => {
+  console.error('✗', e.stack || e.message);
+  if (process.env.GITHUB_ACTIONS) console.log(`::error title=Integration test::${String(e.stack || e.message).replace(/\r?\n/g, '%0A')}`);
+  return 1;
+}).then(code => {
   for (const p of procs) try { p.kill(); } catch {}
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
   process.exit(code);
