@@ -1,7 +1,7 @@
 {
   "name": "roundtable",
   "productName": "Roundtable",
-  "version": "1.4.3",
+  "version": "1.5.0",
   "description": "One place for Claude Code and your other AIs: projects with shared memory, chats with ChatGPT, Gemini and your own model, AI debates, and sync across your computers.",
   "author": "Jaxson",
   "license": "MIT",
@@ -54,6 +54,7 @@
       "server.js",
       "ai.js",
       "sync.js",
+      "commands.js",
       "public/**",
       "electron/**",
       "build/icon.png",

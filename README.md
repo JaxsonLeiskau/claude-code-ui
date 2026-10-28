@@ -28,6 +28,7 @@ All your Claude Code sessions in a sidebar, claude.ai-style Projects with shared
 - **Search** across chat titles and the full text of every message (`Ctrl/⌘+K`).
 - **Live streaming** replies with readable tool cards: shell commands with output, file edits as red/green diffs, to-do lists, sub-agents, web fetches.
 - **Permissions without the guesswork** — pick *Ask first*, *Accept edits*, *Plan mode* or *Bypass*. If Claude gets blocked on a tool, one click allows it and continues.
+- **Type `/` for skills and commands** — like in the terminal and IDE: your skills, custom commands, plugin skills, and the built-ins that work here (`/model`, `/config`, `/mcp`…), with descriptions. Arrow keys and Enter or Tab to pick.
 - **Model picker** (Opus / Sonnet / Haiku), **folder picker** for new chats, and a **stop** button (or `Esc`).
 - Keeps working in the background — switch chats while Claude runs; a spinner marks busy chats, and you re-attach to the live output when you come back.
 - Rename, star and delete chats. Deleted transcripts go to `~/.roundtable/trash`, never erased.
@@ -159,6 +160,7 @@ Environment variables, mostly useful with `npm run web`:
 
 ```
 server.js            local API, projects, runs the claude CLI
+commands.js          the / menu: finds skills, commands and plugins
 ai.js                Open WebUI / ChatGPT / Gemini chats and debate mode
 sync.js              sync between computers through a private GitHub repo
 electron/main.js     desktop window, menu, auto-updates, PATH fix-up

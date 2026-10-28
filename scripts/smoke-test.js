@@ -83,6 +83,20 @@ const { start } = require('../server.js');
   const asks = await (await fetch(`${base}/api/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: gone, prompt: 'continue' }) })).json();
   assert.strictEqual(asks.code, 'FOLDER_MISSING', 'asks for a folder when there is no match');
 
+  // "/" menu: skills, commands and built-ins for a folder
+  fs.mkdirSync(path.join(tmp, 'skills', 'deploy-check'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'skills', 'deploy-check', 'SKILL.md'), '---\nname: deploy-check\ndescription: >\n  Check a deploy\n  went out cleanly\n---\n');
+  fs.mkdirSync(path.join(tmp, 'skills', 'internal'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'skills', 'internal', 'SKILL.md'), '---\nname: internal\ndescription: x\nuser-invocable: false\n---\n');
+  fs.mkdirSync(path.join(tmp, 'commands'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'commands', 'standup.md'), '---\ndescription: Summarize yesterday\n---\nbody');
+  const { commands } = await get('/api/commands?cwd=' + encodeURIComponent(tmp));
+  const byName = Object.fromEntries(commands.map(c => [c.name, c]));
+  assert.strictEqual(byName['deploy-check'].description, 'Check a deploy went out cleanly', 'reads skill descriptions');
+  assert.ok(!byName.internal, 'hides skills that are not user-invocable');
+  assert.strictEqual(byName.standup.source, 'command', 'lists custom commands');
+  assert.strictEqual(byName.model.source, 'builtin', 'lists built-ins that work headless');
+
   const page = await fetch(base + '/');
   assert.ok((await page.text()).includes('id="composer"'), 'serves the UI');
 

@@ -1389,6 +1389,89 @@ function renderSyncPane(pane) {
     S.sync = await api('/api/sync/disconnect', { method: 'POST' }); renderSyncPane(pane); renderSyncBadge();
   };
 }
+/* ---------------- "/" menu: skills, commands, plugins ---------------- */
+const slash = { open: false, items: [], sel: 0, cwd: null, list: null, loading: null };
+function slashCwd() {
+  const v = S.view;
+  if (!v) return '';
+  if (v.mode === 'project') return (v.project && v.project.cwd) || v.cwd || '';
+  return v.cwd || '';
+}
+async function loadCommands(cwd) {
+  if (slash.list && slash.cwd === cwd && Date.now() - slash.at < 20000) return slash.list;
+  if (slash.loading && slash.loadingCwd === cwd) return slash.loading;
+  slash.loadingCwd = cwd;
+  slash.loading = api('/api/commands?cwd=' + encodeURIComponent(cwd || '')).then(r => {
+    slash.list = r.commands; slash.cwd = cwd; slash.at = Date.now(); slash.loading = null; return r.commands;
+  }).catch(() => { slash.loading = null; return []; });
+  return slash.loading;
+}
+// The "/word" being typed at the very start of the message, if the caret is still inside it
+function slashQuery() {
+  const ta = $('#input');
+  const before = ta.value.slice(0, ta.selectionStart);
+  const m = before.match(/^\/([^\s]*)$/);
+  return m && currentMode().startsWith('claude:') ? m[1] : null;
+}
+async function updateSlash() {
+  const q = slashQuery();
+  if (q === null) return closeSlash();
+  const list = await loadCommands(slashCwd());
+  if (slashQuery() !== q) return; // typing moved on while loading
+  const ql = q.toLowerCase();
+  const score = c => { const n = c.name.toLowerCase(); return n.startsWith(ql) ? 0 : n.split(/[:\-_]/).some(w => w.startsWith(ql)) ? 1 : n.includes(ql) ? 2 : (c.description || '').toLowerCase().includes(ql) ? 3 : 9; };
+  slash.items = list.map(c => [score(c), c]).filter(([s]) => s < 9).sort((a, b) => a[0] - b[0]).map(([, c]) => c).slice(0, 60);
+  slash.sel = Math.min(slash.sel, Math.max(0, slash.items.length - 1));
+  if (!slash.open) slash.sel = 0;
+  slash.open = true;
+  renderSlash(list.length);
+}
+function renderSlash(total) {
+  const el = $('#slashMenu');
+  const label = c => c.source === 'builtin' ? 'Built-in' : c.source === 'plugin' ? `Plugin · ${c.scope}` : `${c.source === 'skill' ? 'Skill' : 'Command'} · ${c.scope === 'project' ? 'this project' : c.scope === 'personal' ? 'yours' : c.scope}`;
+  const ico = c => c.source === 'builtin' ? I.terminal : c.source === 'plugin' ? I.box : c.source === 'skill' ? I.book : I.note;
+  if (!slash.items.length) {
+    el.innerHTML = `<div class="sm-empty">${total ? 'No matching commands or skills' : 'No skills or commands found for this folder'}</div>`;
+  } else {
+    el.innerHTML = `<div class="sm-head">Skills & commands</div>` + slash.items.map((c, i) => `
+      <div class="sm-item ${i === slash.sel ? 'on' : ''}" role="option" data-i="${i}" aria-selected="${i === slash.sel}">
+        <span class="sm-ico">${ico(c)}</span>
+        <span class="sm-main"><span class="sm-name">/${esc(c.name)}${c.argHint ? ` <span class="sm-arg">${esc(c.argHint)}</span>` : ''}</span>${c.description ? `<span class="sm-desc">${esc(c.description)}</span>` : ''}</span>
+        <span class="sm-tag">${esc(label(c))}</span>
+      </div>`).join('');
+  }
+  el.hidden = false;
+  el.querySelectorAll('.sm-item').forEach(row => {
+    row.addEventListener('mousedown', e => { e.preventDefault(); pickSlash(+row.dataset.i); });
+    row.addEventListener('mousemove', () => { if (slash.sel !== +row.dataset.i) { slash.sel = +row.dataset.i; renderSlash(total); } });
+  });
+  const on = el.querySelector('.sm-item.on');
+  if (on) on.scrollIntoView({ block: 'nearest' });
+}
+function closeSlash() { slash.open = false; const el = $('#slashMenu'); if (el) el.hidden = true; }
+function pickSlash(i) {
+  const c = slash.items[i];
+  if (!c) return;
+  const ta = $('#input');
+  const rest = ta.value.slice(ta.selectionStart).replace(/^\S*/, '').replace(/^\s*/, '');
+  ta.value = `/${c.name} ${rest}`;
+  const pos = c.name.length + 2;
+  ta.setSelectionRange(pos, pos);
+  closeSlash(); autoGrow(); renderComposerState(); ta.focus();
+}
+/** Keyboard handling while the menu is open. Returns true when the key was used. */
+function slashKey(e) {
+  if (!slash.open) return false;
+  const n = slash.items.length;
+  if (e.key === 'ArrowDown' && n) { slash.sel = (slash.sel + 1) % n; renderSlash(1); }
+  else if (e.key === 'ArrowUp' && n) { slash.sel = (slash.sel - 1 + n) % n; renderSlash(1); }
+  else if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey && n) pickSlash(slash.sel);
+  else if (e.key === 'Escape') { closeSlash(); }
+  else return false;
+  e.preventDefault(); e.stopPropagation();
+  return true;
+}
+
 /* ---------------- sending ---------------- */
 async function send(text) {
   text = (text || '').trim();
@@ -1522,8 +1605,11 @@ function bind() {
   $('#cwdChip').onclick = () => { if (S.view && S.view.cwd) { copyText(S.view.cwd); toast('Copied folder path'); } };
 
   const input = $('#input');
-  input.addEventListener('input', () => { autoGrow(); renderComposerState(); });
+  input.addEventListener('input', () => { autoGrow(); renderComposerState(); updateSlash(); });
+  input.addEventListener('click', updateSlash);
+  input.addEventListener('blur', () => setTimeout(closeSlash, 120));
   input.addEventListener('keydown', e => {
+    if (slashKey(e)) return;
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(input.value); }
   });
   $('#composer').addEventListener('submit', e => { e.preventDefault(); if (S.view && S.view.runId) stop(); else send(input.value); });

@@ -596,3 +596,20 @@ select.input { appearance: none; -webkit-appearance: none; cursor: pointer; }
 .deb-toggle.on .mini-switch { background: var(--accent); }
 .deb-toggle.on .mini-switch::after { transform: translateX(10px); }
 @media (max-width: 520px) { .deb-toggle span:last-child { display: none; } }
+
+/* "/" menu */
+#composer { position: relative; }
+.slash-menu { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); max-height: min(340px, 50vh); overflow-y: auto; background: var(--surface); border-radius: 14px; box-shadow: var(--shadow-pop); padding: 6px; z-index: 40; animation: pop .1s ease-out; }
+.sm-head { font-size: 11.5px; color: var(--faint); padding: 4px 10px 6px; }
+.sm-item { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 9px; cursor: pointer; }
+.sm-item.on { background: var(--hover); }
+.sm-ico { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); flex: none; }
+.sm-ico svg { width: 14px; height: 14px; }
+.sm-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.sm-name { font: 13px var(--mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sm-arg { color: var(--faint); }
+.sm-desc { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sm-tag { flex: none; font-size: 11.5px; color: var(--faint); max-width: 34%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sm-empty { padding: 10px 12px; color: var(--muted); font-size: 13px; }
+#main.empty .slash-menu { bottom: auto; top: calc(100% + 8px); }
+@media (max-width: 520px) { .sm-tag { display: none; } }

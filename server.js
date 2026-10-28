@@ -28,6 +28,8 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const ai = require('./ai');
 ai.init({ APP_DIR, spawnClaude: (...a) => spawnClaude(...a) });
 let sync = null; // GitHub sync, set up below
+const commands = require('./commands');
+commands.init({ claudeHome: CLAUDE_HOME });
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const IS_WIN = process.platform === 'win32';
 
@@ -515,6 +517,7 @@ async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowed
       const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
       if (!line) continue;
       let o; try { o = JSON.parse(line); } catch { pushEvent(run, { kind: 'stderr', text: line + '\n' }); continue; }
+      if (o.type === 'system' && o.subtype === 'init') commands.noteInit(run.cwd, o);
       if (o.type === 'system' && o.subtype === 'init' && o.session_id) {
         if (!run.sessionId && run.projectId) { meta.sessions[o.session_id] = { ...(meta.sessions[o.session_id] || {}), projectId: run.projectId }; saveMeta(); }
         run.sessionId = o.session_id;
@@ -745,6 +748,12 @@ async function route(req, res) {
     catch (e) { return send(res, 400, { error: e.message, status: sync.publicStatus() }); }
   }
   if (p === '/api/sync/disconnect' && m === 'POST') return send(res, 200, sync.disconnect());
+
+  if (p === '/api/commands' && m === 'GET') {
+    let cwd = url.searchParams.get('cwd') || '';
+    if (cwd) cwd = localPath(cwd);
+    return send(res, 200, { commands: await commands.list(cwd && fs.existsSync(cwd) ? cwd : null) });
+  }
 
   if (p === '/api/ai' && m === 'GET') return send(res, 200, ai.publicConfig());
   if (p === '/api/ai' && m === 'PATCH') return send(res, 200, ai.updateConfig(await readBody(req)));
