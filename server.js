@@ -146,10 +146,27 @@ async function scanFile({ file, projectDir }) {
 
 function decorate(info) {
   const m = meta.sessions[info.id] || {};
-  const local = { ...info, cwd: m.cwdOverride || info.cwd };
+  const local = { ...info, cwd: m.cwdOverride || localPath(info.cwd) };
   return { ...local, title: m.title || info.autoTitle, pinned: !!m.pinned, projectId: projectIdFor(local) };
 }
 const isInside = (p, dir) => !!p && (p === dir || p.startsWith(dir + path.sep));
+
+// Synced chats and projects carry folder paths from the computer they started on. When that
+// path is inside another user folder (C:\Users\name, /Users/name, /home/name) and doesn't
+// exist here, use the same place inside this computer's user folder.
+function translateHome(p) {
+  const m = String(p || '').match(/^([A-Za-z]:\\Users\\[^\\]+|\/Users\/[^/]+|\/home\/[^/]+)([\\/].*)?$/);
+  if (!m) return null;
+  const rest = (m[2] || '').split(/[\\/]+/).filter(Boolean);
+  const cand = path.join(os.homedir(), ...rest);
+  return cand !== p ? cand : null;
+}
+/** The folder to use on this computer for a path that may come from another device. */
+function localPath(p) {
+  if (!p || fs.existsSync(p)) return p;
+  const t = translateHome(p);
+  return t && fs.existsSync(t) ? t : p;
+}
 
 async function listSessions() {
   const files = await listSessionFiles();
@@ -260,7 +277,7 @@ function listProjects(sessions) {
   return [...out.values()].sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''));
 }
 const publicProject = p => ({
-  id: p.id, name: p.name, description: p.description || '', instructions: p.instructions || '', cwd: p.cwd,
+  id: p.id, name: p.name, description: p.description || '', instructions: p.instructions || '', cwd: localPath(p.cwd),
   memoryEnabled: p.memoryEnabled !== false, memoryUpdated: p.memoryUpdated || null, created: p.created, updated: p.updated, virtual: false,
 });
 
@@ -974,12 +991,15 @@ async function route(req, res) {
       if (info && info.cwd) cwd = info.cwd;
       const ov = meta.sessions[sessionId] && meta.sessions[sessionId].cwdOverride;
       if (ov && fs.existsSync(ov)) cwd = ov;
+      else if (!fs.existsSync(cwd) && localPath(cwd) !== cwd) cwd = localPath(cwd);
       else if (!fs.existsSync(cwd)) return send(res, 400, { error: 'This chat\'s folder isn\'t on this computer', code: 'FOLDER_MISSING', cwd });
       if (info) project = await getProject(projectIdFor(info));
     } else if (body.projectId && ID_RE.test(body.projectId)) {
       project = await getProject(body.projectId);
       if (!project) return send(res, 404, { error: 'Project not found' });
       cwd = project.cwd;
+      // a project folder from another computer: same place under this computer's user folder
+      if (!fs.existsSync(cwd)) { const t = translateHome(cwd); if (t) cwd = t; }
       await fsp.mkdir(cwd, { recursive: true }).catch(() => {});
     }
     else {
@@ -1076,7 +1096,7 @@ let appHooks = {};
 /** Used by the desktop app to report its version and update status. */
 function setAppHooks(h) { appHooks = h || {}; }
 
-module.exports = { start, stopAll, setAppHooks, _internal: { buildContext, getProject, listSessions, store } };
+module.exports = { start, stopAll, setAppHooks, _internal: { buildContext, getProject, listSessions, store, translateHome } };
 
 // Run directly (`node server.js`): serve and open the default browser.
 if (require.main === module) {

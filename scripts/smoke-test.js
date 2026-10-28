@@ -73,6 +73,16 @@ const { start } = require('../server.js');
   assert.ok(listed.some(p => p.id === project.id && !p.virtual), 'lists the project');
   assert.ok(listed.some(p => p.virtual && p.chatCount === 1), 'lists folders as projects');
 
+  // a chat synced from a computer with a different user name continues in this user's folder
+  const otherId = '99999999-2222-3333-4444-555555555555';
+  fs.writeFileSync(path.join(projDir, otherId + '.jsonl'), JSON.stringify({ type: 'user', cwd: '/home/someone-else', sessionId: otherId, timestamp: '2026-01-02T10:00:00Z', message: { role: 'user', content: 'From the other computer' } }) + '\n');
+  const moved = await fetch(`${base}/api/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: otherId, prompt: 'continue' }) });
+  assert.ok(moved.ok, 'continues in this computer\'s user folder instead of asking');
+  const gone = '88888888-2222-3333-4444-555555555555';
+  fs.writeFileSync(path.join(projDir, gone + '.jsonl'), JSON.stringify({ type: 'user', cwd: '/nowhere/at/all', sessionId: gone, timestamp: '2026-01-02T10:00:00Z', message: { role: 'user', content: 'Folder only elsewhere' } }) + '\n');
+  const asks = await (await fetch(`${base}/api/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: gone, prompt: 'continue' }) })).json();
+  assert.strictEqual(asks.code, 'FOLDER_MISSING', 'asks for a folder when there is no match');
+
   const page = await fetch(base + '/');
   assert.ok((await page.text()).includes('id="composer"'), 'serves the UI');
 
