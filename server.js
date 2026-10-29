@@ -784,6 +784,21 @@ function send(res, status, body) {
   res.end(data);
 }
 
+const MAX_FILE = 2 * 1024 ** 3; // 2 GB per attached or project file
+/** Stream a raw request body straight to a file (big files never sit in memory). Returns its size. */
+function saveBody(req, fp, limit = MAX_FILE) {
+  return new Promise((resolve, reject) => {
+    let size = 0, failed = false;
+    const out = fs.createWriteStream(fp);
+    const fail = err => { if (failed) return; failed = true; out.destroy(); fs.unlink(fp, () => {}); reject(err); };
+    req.on('data', c => { size += c.length; if (size > limit) { fail(new Error('Files can be up to 2 GB')); req.destroy(); } });
+    req.on('error', fail); out.on('error', fail);
+    out.on('finish', () => { if (!failed) resolve(size); });
+    req.pipe(out);
+  });
+}
+const isRaw = req => /octet-stream/.test(req.headers['content-type'] || '');
+
 function readBody(req, limit = 4e6) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
@@ -862,16 +877,22 @@ async function route(req, res) {
   }
 
   if (p === '/api/uploads' && m === 'POST') {
-    const body = await readBody(req, 40e6);
-    const data = Buffer.from(String(body.data || ''), 'base64');
-    if (!data.length) return send(res, 400, { error: 'That file is empty' });
-    if (data.length > 25e6) return send(res, 400, { error: 'Files can be up to 25 MB' });
     const dir = path.join(UPLOADS_DIR, new Date().toISOString().slice(0, 10) + '-' + crypto.randomBytes(4).toString('hex'));
     await fsp.mkdir(dir, { recursive: true });
-    const name = safeName(body.name || 'file');
+    let name, size;
+    if (isRaw(req)) {
+      // the file itself, streamed (name in the query string)
+      name = safeName(url.searchParams.get('name') || 'file');
+      try { size = await saveBody(req, path.join(dir, name)); } catch (e) { return send(res, 400, { error: e.message }); }
+    } else {
+      const body = await readBody(req, 40e6);
+      const data = Buffer.from(String(body.data || ''), 'base64');
+      name = safeName(body.name || 'file'); size = data.length;
+      await fsp.writeFile(path.join(dir, name), data);
+    }
     const fp = path.join(dir, name);
-    await fsp.writeFile(fp, data);
-    return send(res, 200, { id: path.relative(UPLOADS_DIR, fp).split(path.sep).join('/'), name, size: data.length, image: IMG_RE.test(name), url: uploadUrl(fp) });
+    if (!size) { await fsp.unlink(fp).catch(() => {}); return send(res, 400, { error: 'That file is empty' }); }
+    return send(res, 200, { id: path.relative(UPLOADS_DIR, fp).split(path.sep).join('/'), name, size, image: IMG_RE.test(name), url: uploadUrl(fp) });
   }
   if (p.startsWith('/api/uploads/') && m === 'GET') {
     const fp = uploadPath(decodeURIComponent(p.slice('/api/uploads/'.length)));
@@ -1067,11 +1088,21 @@ async function route(req, res) {
   if ((mm = p.match(/^\/api\/projects\/([A-Za-z0-9_-]{4,64})\/files(?:\/(.+))?$/))) {
     const id = mm[1];
     if (m === 'POST') {
-      const body = await readBody(req, 40e6);
       const pr = await getProject(id, { create: true });
       if (!pr) return send(res, 404, { error: 'Project not found' });
       const dir = filesDir(id);
       await fsp.mkdir(dir, { recursive: true });
+      if (isRaw(req)) {
+        let name = safeName(url.searchParams.get('name'));
+        const ext = path.extname(name), stem = name.slice(0, name.length - ext.length);
+        for (let i = 2; fs.existsSync(path.join(dir, name)); i++) name = `${stem} (${i})${ext}`;
+        let size;
+        try { size = await saveBody(req, path.join(dir, name)); } catch (e) { return send(res, 400, { error: e.message }); }
+        if (!size) { await fsp.unlink(path.join(dir, name)).catch(() => {}); return send(res, 400, { error: 'That file is empty' }); }
+        pr.updated = new Date().toISOString(); saveProjects();
+        return send(res, 200, { file: { name, size } });
+      }
+      const body = await readBody(req, 40e6);
       let name = safeName(body.name);
       const data = typeof body.text === 'string' ? Buffer.from(body.text, 'utf8') : Buffer.from(String(body.data || ''), 'base64');
       if (!data.length) return send(res, 400, { error: 'That file is empty' });

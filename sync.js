@@ -164,7 +164,7 @@ async function localFiles(busy) {
     if (fs.existsSync(path.join(dir, 'memory.md'))) out.set(`projects/${p.id}/memory.md`, await fileEntry(`projects/${p.id}/memory.md`, path.join(dir, 'memory.md'), { kind: 'file' }));
     for (const f of await fsp.readdir(path.join(dir, 'files')).catch(() => [])) {
       const fp = path.join(dir, 'files', f);
-      try { if ((await fsp.stat(fp)).isFile()) out.set(`projects/${p.id}/files/${f}`, await fileEntry(`projects/${p.id}/files/${f}`, fp, { kind: 'file' })); } catch {}
+      try { const st = await fsp.stat(fp); if (st.isFile() && st.size <= 50e6) out.set(`projects/${p.id}/files/${f}`, await fileEntry(`projects/${p.id}/files/${f}`, fp, { kind: 'file' })); } catch {}
     }
   }
   // chats with other models

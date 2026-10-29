@@ -1384,12 +1384,11 @@ function renderProjectPage() {
 async function uploadFiles(files) {
   const v = S.view;
   if (!v || v.mode !== 'project') return;
-  const read = f => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = rej; r.readAsDataURL(f); });
   let n = 0;
   for (const f of files) {
-    if (f.size > 30e6) { toast(`${f.name} is over 30 MB`); continue; }
+    if (f.size > 2 * 1024 ** 3) { toast(`${f.name} is over 2 GB`); continue; }
     toast(`Uploading ${f.name}…`);
-    try { await api(`/api/projects/${v.projectId}/files`, { method: 'POST', body: { name: f.name, data: await read(f) } }); n++; }
+    try { await sendFile(`/api/projects/${v.projectId}/files?name=${encodeURIComponent(f.name)}`, f, pct => { if (pct % 10 === 0) toast(`Uploading ${f.name}… ${pct}%`); }); n++; }
     catch (e) { toast(`${f.name}: ${e.message}`); }
   }
   if (n) toast(`Added ${n} file${n > 1 ? 's' : ''}`);
@@ -1591,22 +1590,31 @@ function renderSyncPane(pane) {
 S.pending = [];
 function addFiles(files) {
   for (const f of files) {
-    if (f.size > 25e6) { toast(`${f.name} is over 25 MB`); continue; }
-    const item = { key: Math.random().toString(36).slice(2), name: f.name || 'pasted-image.png', size: f.size, image: /^image\//.test(f.type), status: 'uploading' };
+    if (f.size > 2 * 1024 ** 3) { toast(`${f.name} is over 2 GB`); continue; }
+    const item = { key: Math.random().toString(36).slice(2), name: f.name || 'pasted-image.png', size: f.size, image: /^image\//.test(f.type), status: 'uploading', progress: 0 };
     if (item.image) try { item.preview = URL.createObjectURL(f); } catch {}
     S.pending.push(item);
-    const r = new FileReader();
-    r.onload = async () => {
-      try {
-        const up = await api('/api/uploads', { method: 'POST', body: { name: item.name, data: String(r.result).split(',')[1] || '' } });
-        Object.assign(item, { id: up.id, status: 'ready' });
-      } catch (e) { item.status = 'error'; item.error = e.message; toast(`${item.name}: ${e.message}`); }
-      renderAttachRow(); renderComposerState();
-    };
-    r.onerror = () => { item.status = 'error'; renderAttachRow(); };
-    r.readAsDataURL(f);
+    sendFile(`/api/uploads?name=${encodeURIComponent(item.name)}`, f, pct => {
+      item.progress = pct;
+      const el = document.querySelector(`.att-chip[data-k="${item.key}"] .att-size`);
+      if (el) el.textContent = `Adding… ${pct}%`;
+    }).then(up => Object.assign(item, { id: up.id, status: 'ready' }))
+      .catch(e => { item.status = 'error'; item.error = e.message; toast(`${item.name}: ${e.message}`); })
+      .finally(() => { renderAttachRow(); renderComposerState(); });
   }
   renderAttachRow(); renderComposerState(); $('#input').focus();
+}
+/** Send a file as-is (streamed, any size up to 2 GB), reporting progress 0–100. */
+function sendFile(url, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', url);
+    x.setRequestHeader('Content-Type', 'application/octet-stream');
+    x.upload.onprogress = e => { if (e.lengthComputable && onProgress) onProgress(Math.min(99, Math.round(e.loaded / e.total * 100))); };
+    x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch {} x.status < 300 ? resolve(j) : reject(new Error(j.error || 'Upload failed')); };
+    x.onerror = () => reject(new Error('Upload failed'));
+    x.send(file);
+  });
 }
 function renderAttachRow() {
   const row = $('#attachRow');
@@ -1614,7 +1622,7 @@ function renderAttachRow() {
   row.innerHTML = S.pending.map(a => `
     <div class="att-chip ${a.status}" data-k="${a.key}" title="${esc(a.error || a.name)}">
       ${a.preview ? `<img src="${a.preview}" alt="">` : `<span class="att-ico">${I.file}</span>`}
-      <span class="att-meta"><span class="att-name">${esc(a.name)}</span><span class="att-size">${a.status === 'uploading' ? 'Adding…' : a.status === 'error' ? 'Couldn’t add' : fmtSize(a.size)}</span></span>
+      <span class="att-meta"><span class="att-name">${esc(a.name)}</span><span class="att-size">${a.status === 'uploading' ? `Adding… ${a.progress || 0}%` : a.status === 'error' ? 'Couldn’t add' : fmtSize(a.size)}</span></span>
       <button type="button" class="att-x" title="Remove">${I.x}</button>
     </div>`).join('');
   row.querySelectorAll('.att-x').forEach(b => b.onclick = () => {
