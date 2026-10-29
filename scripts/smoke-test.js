@@ -105,6 +105,10 @@ const { start } = require('../server.js');
   assert.strictEqual((await imp()).chats, 0, 'importing again adds nothing');
   const old = await get('/api/sessions/a-abcdef0123456789abcdef0123456789');
   assert.strictEqual(old.session.provider, 'claude'); assert.strictEqual(old.turns[1].blocks[0].text, 'hello!');
+  const manifest = await (await fetch(base + '/api/import/claude', { method: 'POST', body: JSON.stringify({ data_files: [{ export_url: 'https://x', filename: 'conversations-000.zip' }] }) })).json();
+  assert.ok(/list of download links/.test(manifest.error), 'explains the link-list file');
+  const one = await (await fetch(base + '/api/import/claude', { method: 'POST', body: JSON.stringify({ uuid: '12345678-aaaa-bbbb-cccc-1234567890ab', name: 'Single', chat_messages: [{ sender: 'human', text: 'q' }, { sender: 'assistant', text: 'a' }] }) })).json();
+  assert.strictEqual(one.chats, 1, 'reads one-conversation-per-file exports');
   const { readZip } = require('../import.js');
   // a tiny zip with one deflated file
   const zlib = require('zlib'); const data = Buffer.from('[]'); const comp = zlib.deflateRawSync(data); const name = Buffer.from('conversations.json');

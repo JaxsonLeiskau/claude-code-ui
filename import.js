@@ -63,27 +63,64 @@ function messageText(m) {
 
 async function importExport(buf, D) {
   // D: { APP_DIR, UPLOADS_DIR, CHATS_DIR, store, saveProjects, filesDir, memoryFile, loadChat, saveChat }
-  let conversations, projects = null, memories = null, entriesList = null;
-  const t = buf.subarray(0, 3).toString().replace(/^\uFEFF/, '').trim()[0];
-  if (t === '[' || t === '{') {
-    conversations = JSON.parse(buf.toString('utf8').replace(/^\uFEFF/, ''));
-  } else {
+  let entriesList = null;
+  const conversations = [], projects = [], memories = [];
+  const looseDocs = []; // text files in a projects zip, matched to projects by folder name below
+  const isConversation = o => o && typeof o === 'object' && !Array.isArray(o) && (Array.isArray(o.chat_messages) || (Array.isArray(o.messages) && (o.uuid || o.id) && ('name' in o || 'created_at' in o)));
+  const isProject = o => o && typeof o === 'object' && !Array.isArray(o) && !isConversation(o) && (o.uuid || o.id) && ('prompt_template' in o || Array.isArray(o.docs) || 'is_private' in o || 'is_starter_project' in o);
+  const isManifest = o => o && Array.isArray(o.data_files) && o.data_files.some(f => f && f.export_url);
+  // pull conversations / projects / memory out of whatever shape a JSON file has
+  function collect(o, depth = 0) {
+    if (depth > 3 || !o) return;
+    if (Array.isArray(o)) { for (const x of o) collect(x, depth + 1); return; }
+    if (typeof o !== 'object') return;
+    if (isManifest(o)) {
+      const names = o.data_files.map(f => f.filename).filter(Boolean);
+      const err = new Error(`That's the list of download links, not the export itself. Download ${names.filter(n => /conversation|project/i.test(n)).join(' and ') || 'the files'} from the links in the email (or from this list), then choose those .zip files here — you can select them together.`);
+      err.code = 'MANIFEST'; throw err;
+    }
+    if (isConversation(o)) return conversations.push(o);
+    if (isProject(o)) return projects.push(o);
+    if (o.project_memories || o.conversations_memory) return memories.push(o);
+    for (const v of Object.values(o)) if (v && typeof v === 'object') collect(v, depth + 1);
+  }
+  const parse = (text, name) => {
+    text = text.replace(/^﻿/, '');
+    try { return collect(JSON.parse(text)); }
+    catch (e) {
+      if (e.code === 'MANIFEST') throw e;
+      // one JSON object per line
+      for (const line of text.split('\n')) if (line.trim()) try { collect(JSON.parse(line)); } catch {}
+    }
+  };
+  const first = buf.subarray(0, 3).toString().replace(/^﻿/, '').trim()[0];
+  if (first === '[' || first === '{') parse(buf.toString('utf8'), 'file');
+  else {
     const z = readZip(buf);
     entriesList = [...z.keys()].slice(0, 30);
-    conversations = findJson(z, 'conversations.json');
-    projects = findJson(z, 'projects.json');
-    memories = findJson(z, 'memories.json');
-    if (!conversations && !projects) throw new Error('Couldn\'t find conversations.json in that file. Make sure it\'s the export from claude.ai (Settings → Privacy → Export data).');
+    for (const [name, get] of z) {
+      if (name.endsWith('/')) continue;
+      if (/\.(json|jsonl|ndjson)$/i.test(name)) { try { parse(get().toString('utf8'), name); } catch (e) { if (e.code === 'MANIFEST') throw e; } }
+      else if (/\.(md|txt|markdown|csv|html?|xml|ya?ml|py|js|ts|json5?)$/i.test(name)) looseDocs.push({ name, get });
+    }
+    if (!conversations.length && !projects.length) {
+      throw new Error(`No chats or projects found in that file. It contains: ${entriesList.join(', ') || 'nothing'}. Make sure it's from the claude.ai export (conversations-000.zip or projects-000.zip).`);
+    }
+  }
+  // documents stored as separate files inside a project's folder
+  for (const p of projects) {
+    const key = String(p.uuid || p.id).toLowerCase();
+    const mine = looseDocs.filter(d => d.name.toLowerCase().includes(key));
+    if (mine.length) p.docs = [...(Array.isArray(p.docs) ? p.docs : []), ...mine.map(d => ({ filename: path.posix.basename(d.name), content: d.get().toString('utf8') }))];
+    if (!p.uuid) p.uuid = p.id;
   }
   const files = entriesList || [];
-  if (conversations && !Array.isArray(conversations)) conversations = conversations.conversations || conversations.chats || conversations.data || Object.values(conversations).find(Array.isArray) || [];
-  if (projects && !Array.isArray(projects)) projects = projects.projects || projects.data || Object.values(projects).find(Array.isArray) || [];
   const out = { projects: 0, projectsUpdated: 0, chats: 0, chatsUpdated: 0, skipped: 0, documents: 0,
-    found: { conversations: (conversations || []).length, projects: (projects || []).length }, alreadyHere: 0, empty: 0, files };
+    found: { conversations: conversations.length, projects: projects.length }, alreadyHere: 0, empty: 0, files };
   const now = new Date().toISOString();
 
   // projects → chat projects
-  for (const p of Array.isArray(projects) ? projects : []) {
+  for (const p of projects) {
     if (!p || !p.uuid || p.is_starter_project) continue;
     const id = projectIdFor(p.uuid);
     const cur = D.store.projects[id];
@@ -103,7 +140,7 @@ async function importExport(buf, D) {
     }
   }
   // project memory, when the export has it
-  const memList = Array.isArray(memories) ? memories : memories ? [memories] : [];
+  const memList = memories;
   for (const m of memList) {
     const pm = m && m.project_memories;
     if (!pm || typeof pm !== 'object') continue;
@@ -116,8 +153,20 @@ async function importExport(buf, D) {
   }
   D.saveProjects();
 
+  // chats imported earlier (e.g. from a separate conversations file) join projects that arrive now
+  if (projects.length) {
+    const ids = new Set(projects.map(p => projectIdFor(p.uuid)));
+    for (const f of await fsp.readdir(D.CHATS_DIR).catch(() => [])) {
+      if (!f.endsWith('.json')) continue;
+      const chat = await D.loadChat(f.slice(0, -5));
+      if (chat && chat.importedProjectUuid && !chat.projectId && ids.has(projectIdFor(chat.importedProjectUuid)) && D.store.projects[projectIdFor(chat.importedProjectUuid)]) {
+        chat.projectId = projectIdFor(chat.importedProjectUuid); await D.saveChat(chat); out.chatsUpdated++;
+      }
+    }
+  }
+
   // conversations → Claude chats
-  for (const c of conversations || []) {
+  for (const c of conversations) {
     const msgs = Array.isArray(c && c.chat_messages) ? c.chat_messages : Array.isArray(c && c.messages) ? c.messages : [];
     const cid = c && (c.uuid || c.id);
     if (!c || !cid || !msgs.length) { out.skipped++; out.empty++; continue; }
@@ -149,8 +198,9 @@ async function importExport(buf, D) {
       } else if (text) messages.push({ role: 'assistant', text, speaker: 'Claude', ts });
     }
     if (!messages.length) { out.skipped++; continue; }
-    const pid = c.project_uuid || (c.project && c.project.uuid);
+    const pid = c.project_uuid || (c.project && (c.project.uuid || c.project.id)) || null;
     const chat = {
+      importedProjectUuid: pid,
       id, kind: 'model', provider: 'claude', title: String(c.name || messages[0].text || 'Imported chat').replace(/\s+/g, ' ').trim().slice(0, 100) || 'Imported chat',
       projectId: pid && D.store.projects[projectIdFor(pid)] ? projectIdFor(pid) : null,
       created: c.created_at || updated, updated, importedFrom: 'claude.ai', pinned: !!(existing && existing.pinned) || !!c.is_starred, messages,

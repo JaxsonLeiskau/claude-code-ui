@@ -605,10 +605,10 @@ function settingsDialog(tab = 'general') {
         <p class="hint">Bring your chats and projects over from claude.ai. Projects come in as <strong>chat projects</strong> with their instructions, knowledge documents and memory; chats come in as Claude chats you can keep going.</p>
         <ol class="steps">
           <li>On <a href="https://claude.ai/settings/data-privacy-controls" target="_blank" rel="noopener">claude.ai</a>, open <strong>Settings → Privacy</strong> and click <strong>Export data</strong>.</li>
-          <li>Open the email from Anthropic and download the file (the link works for 24 hours).</li>
-          <li>Choose that file here. Importing again later only adds or updates what changed.</li>
+          <li>Open the email from Anthropic and download <strong>conversations-000.zip</strong> and <strong>projects-000.zip</strong> (there may be more parts, like -001). The links work for 24 hours.</li>
+          <li>Choose those files here — you can select them all at once. Importing again later only adds or updates what changed.</li>
         </ol>
-        <div class="row-end"><span class="sy-msg" id="imMsg"></span><input type="file" id="imFile" accept=".zip,.json" hidden><button class="btn accent" id="imGo" type="button">${I.upload} Choose export file…</button></div>
+        <div class="row-end"><span class="sy-msg" id="imMsg"></span><input type="file" id="imFile" accept=".zip,.json" multiple hidden><button class="btn accent" id="imGo" type="button">${I.upload} Choose export files…</button></div>
         <small class="muted-note">The export doesn't include the contents of files you attached in chats, so those show by name only. Text you attached is kept.</small>
       </div>`,
     foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="setSave">Save</button>`,
@@ -664,14 +664,26 @@ function settingsDialog(tab = 'general') {
   renderSyncPane($('#syncPane', m.el));
   $('#imGo', m.el).onclick = () => $('#imFile', m.el).click();
   $('#imFile', m.el).onchange = async e => {
-    const f = e.target.files[0]; e.target.value = '';
-    if (!f) return;
+    // projects first, so chats can join them
+    const picked = [...e.target.files].sort((a, b) => /project/i.test(b.name) - /project/i.test(a.name)); e.target.value = '';
+    if (!picked.length) return;
     const btn = $('#imGo', m.el), msg = $('#imMsg', m.el);
-    btn.disabled = true; msg.className = 'sy-msg info'; msg.textContent = `Importing ${f.name}…`;
+    btn.disabled = true; msg.className = 'sy-msg info';
     try {
-      const r = await fetch('/api/import/claude', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || 'Import failed');
+      const j = { projects: 0, projectsUpdated: 0, chats: 0, chatsUpdated: 0, documents: 0, alreadyHere: 0, empty: 0, found: { conversations: 0, projects: 0 }, files: [] };
+      const skippedFiles = [];
+      for (const f of picked) {
+        msg.textContent = `Importing ${f.name}…`;
+        const r = await fetch('/api/import/claude', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f });
+        const one = await r.json();
+        if (!r.ok) {
+          // other parts of the export (artifacts, frames…) simply have nothing to import
+          if (picked.length > 1 && /No chats or projects found/.test(one.error || '')) { skippedFiles.push(f.name); continue; }
+          throw new Error(one.error || 'Import failed');
+        }
+        for (const k of ['projects', 'projectsUpdated', 'chats', 'chatsUpdated', 'documents', 'alreadyHere', 'empty']) j[k] += one[k] || 0;
+        j.found.conversations += (one.found || {}).conversations || 0; j.found.projects += (one.found || {}).projects || 0;
+      }
       const n = (x, w) => `${x} ${w}${x === 1 ? '' : 's'}`;
       const found = j.found || {};
       await refreshSessions();
@@ -681,7 +693,7 @@ function settingsDialog(tab = 'general') {
       } else {
         const parts = [j.chats && `added ${n(j.chats, 'chat')}`, j.projects && `added ${n(j.projects, 'project')}`, (j.chatsUpdated + j.projectsUpdated) && `updated ${j.chatsUpdated + j.projectsUpdated}`].filter(Boolean);
         msg.className = 'sy-msg ok';
-        msg.innerHTML = `Found ${n(found.conversations, 'chat')} and ${n(found.projects, 'project')} in the file. ${parts.length ? esc(parts.join(', ')) + '.' : 'All of them were already here.'}${j.alreadyHere && parts.length ? ` ${j.alreadyHere} were already here.` : ''}${j.empty ? ` ${n(j.empty, 'empty chat')} skipped.` : ''}
+        msg.innerHTML = `Found ${n(found.conversations, 'chat')} and ${n(found.projects, 'project')} in ${picked.length > 1 ? 'the files' : 'the file'}. ${parts.length ? esc(parts.join(', ')) + '.' : 'All of them were already here.'}${j.alreadyHere && parts.length ? ` ${j.alreadyHere} were already here.` : ''}${j.empty ? ` ${n(j.empty, 'empty chat')} skipped.` : ''}${skippedFiles.length ? ` (${esc(skippedFiles.join(', '))} had nothing to import.)` : ''}
           ${S.sessions.some(s => s.imported) ? `<button class="pp-link" id="imShow" type="button">Show imported chats</button>` : ''}`;
         const sb = $('#imShow', m.el);
         if (sb) sb.onclick = () => { m.close(); S.filterImported = true; renderSidebar(); $('#sbScroll').scrollTop = 0; };
