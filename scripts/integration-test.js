@@ -73,6 +73,19 @@ function device(name, port) {
   assert.strictEqual(db.rounds.length, 2, 'two rounds');
   assert.strictEqual(d.turns[1].blocks[1].text, 'CONSENSUS: use Tailscale.', 'moderator consensus');
 
+  // plain Claude chats in a chat project
+  const { project: cp } = await desk.api('/api/projects', 'POST', { name: 'Trips', kind: 'chat' });
+  assert.strictEqual(cp.kind, 'chat'); assert.strictEqual(cp.cwd, null, 'chat projects have no folder');
+  await assert.rejects(desk.api('/api/chat', 'POST', { prompt: 'x', projectId: cp.id }), /chat project/, 'no Claude Code in chat projects');
+  const cc1 = await desk.api('/api/chat', 'POST', { kind: 'model', provider: 'claude', prompt: 'Plan a trip', projectId: cp.id });
+  await desk.waitIdle();
+  const ccv = await desk.api(`/api/sessions/${cc1.sessionId}`);
+  assert.strictEqual(ccv.turns[1].speaker, 'Claude'); assert.strictEqual(ccv.session.projectId, cp.id);
+  const use = (await desk.api('/api/usage')).limits;
+  assert.strictEqual(use.five_hour.utilization, 0.25, 'plan usage collected from Claude Code');
+  await desk.api(`/api/sessions/${cc1.sessionId}`, 'DELETE');
+  await desk.api(`/api/projects/${cp.id}`, 'DELETE');
+
   // a Claude Code chat on the desktop
   const cc = await desk.api('/api/chat', 'POST', { prompt: 'Fix the bug', cwd: path.join(desk.home, 'work'), permissionMode: 'bypassPermissions' });
   await desk.waitIdle();

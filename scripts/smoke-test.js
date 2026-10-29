@@ -97,6 +97,23 @@ const { start } = require('../server.js');
   assert.strictEqual(byName.standup.source, 'command', 'lists custom commands');
   assert.strictEqual(byName.model.source, 'builtin', 'lists built-ins that work headless');
 
+  // importing a claude.ai export (conversations.json form)
+  const exportJson = JSON.stringify([{ uuid: 'abcdef01-2345-6789-abcd-ef0123456789', name: 'Old chat', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:01:00Z',
+    chat_messages: [{ sender: 'human', text: 'hi', content: [{ type: 'text', text: 'hi' }] }, { sender: 'assistant', text: '', content: [{ type: 'text', text: 'hello!' }] }] }]);
+  const imp = async () => (await fetch(base + '/api/import/claude', { method: 'POST', body: exportJson })).json();
+  assert.strictEqual((await imp()).chats, 1, 'imports a claude.ai conversation');
+  assert.strictEqual((await imp()).chats, 0, 'importing again adds nothing');
+  const old = await get('/api/sessions/a-abcdef0123456789abcdef0123456789');
+  assert.strictEqual(old.session.provider, 'claude'); assert.strictEqual(old.turns[1].blocks[0].text, 'hello!');
+  const { readZip } = require('../import.js');
+  // a tiny zip with one deflated file
+  const zlib = require('zlib'); const data = Buffer.from('[]'); const comp = zlib.deflateRawSync(data); const name = Buffer.from('conversations.json');
+  const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(8, 8); lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(data.length, 22); lh.writeUInt16LE(name.length, 26);
+  const cd = Buffer.alloc(46); cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt16LE(8, 10); cd.writeUInt32LE(comp.length, 20); cd.writeUInt32LE(data.length, 24); cd.writeUInt16LE(name.length, 28); cd.writeUInt32LE(0, 42);
+  const body = Buffer.concat([lh, name, comp]); const cdBuf = Buffer.concat([cd, name]);
+  const eocd = Buffer.alloc(22); eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(1, 8); eocd.writeUInt16LE(1, 10); eocd.writeUInt32LE(cdBuf.length, 12); eocd.writeUInt32LE(body.length, 16);
+  assert.strictEqual(readZip(Buffer.concat([body, cdBuf, eocd])).get('conversations.json')().toString(), '[]', 'reads zip files');
+
   const page = await fetch(base + '/');
   assert.ok((await page.text()).includes('id="composer"'), 'serves the UI');
 

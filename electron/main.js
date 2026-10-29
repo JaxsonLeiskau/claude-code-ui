@@ -174,11 +174,10 @@ if (process.platform === 'win32') app.setAppUserModelId('local.claude-code-ui');
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
+  // Launching the app again (e.g. clicking the taskbar icon with Shift, or from the Start menu)
+  // opens another window; every window works on its own chat at the same time
   app.on('second-instance', () => {
-    const win = current();
-    if (!win) return createWindow();
-    if (win.isMinimized()) win.restore();
-    win.focus();
+    createWindow('#/');
   });
 
   app.whenReady().then(async () => {

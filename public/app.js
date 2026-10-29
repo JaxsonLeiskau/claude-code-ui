@@ -43,6 +43,7 @@ const I = {
   flask: P('<path d="M9 3h6M10 3v6L4.5 18.5A1.8 1.8 0 0 0 6 21h12a1.8 1.8 0 0 0 1.5-2.5L14 9V3"/><path d="M7 15h10"/>'),
   link: P('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
   up: P('<path d="m6 15 6-6 6 6"/>'),
+  chat: P('<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 3.5V17h0A2.5 2.5 0 0 1 4 14.5z"/>'),
   clip: P('<path d="M20.5 11.5 12.4 19.6a5.2 5.2 0 0 1-7.4-7.4l8.5-8.5a3.5 3.5 0 0 1 4.9 4.9l-8.5 8.5a1.7 1.7 0 0 1-2.5-2.5l7.8-7.8"/>'),
   box: P('<path d="M12 3 3.5 7.5 12 12l8.5-4.5z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16.5 8.5 4.5 8.5-4.5"/>'),
   upload: P('<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/>'),
@@ -191,7 +192,7 @@ function renderSidebar() {
     const el = document.createElement('div');
     el.className = 'sb-proj' + (S.view && S.view.mode === 'project' && S.view.projectId === p.id ? ' active' : '');
     el.title = p.virtual ? homeify(p.cwd) : `${p.name}\n${homeify(p.cwd)}`;
-    el.innerHTML = `${p.virtual ? I.folder : I.box}<span class="t">${esc(p.name)}</span><span class="count">${p.chatCount || ''}</span>`;
+    el.innerHTML = `${projIcon(p)}<span class="t">${esc(p.name)}</span><span class="count">${p.chatCount || ''}</span>`;
     el.onclick = () => goProject(p.id);
     projList.appendChild(el);
   }
@@ -236,6 +237,7 @@ function openInNewWindow(hash) {
   window.open(location.origin + location.pathname + location.search + hash, '_blank');
 }
 
+const projIcon = p => p.virtual ? I.folder : p.kind === 'chat' ? I.chat : I.box;
 // The little picture beside each chat: who you're talking to
 function chatIcon(s) {
   if (s.kind === 'debate') return `<span class="ci">${avatar('Debate')}</span>`;
@@ -360,8 +362,13 @@ function lockedMode() {
   if (v.kind === 'debate') return 'debate';
   return 'claude';
 }
+const inChatProject = () => { const v = S.view; if (!v) return false; const p = v.mode === 'project' ? v.project : null; return !!(p && p.kind === 'chat'); };
 function currentMode() {
   const lock = lockedMode();
+  if (!lock && inChatProject()) {
+    const m = S.settings.chatModel || 'model:claude';
+    return (m === 'debate' && S.ai && S.ai.debateEnabled) || (S.ai && (S.ai.available || []).some(p => 'model:' + p.id === m)) ? m : 'model:claude';
+  }
   if (lock === 'claude') return (S.view.claudeModel && S.view.claudeModel.startsWith('claude:')) ? S.view.claudeModel : (S.settings.model.startsWith('claude:') ? S.settings.model : 'claude:');
   if (lock) return lock;
   const m = S.settings.model || 'claude:';
@@ -382,7 +389,8 @@ async function toggleDebate() {
     renderComposerState();
     return settingsDialog('ai');
   }
-  S.settings.model = turnOn ? 'debate' : (S.settings.model === 'debate' ? 'claude:' : S.settings.model);
+  if (inChatProject()) S.settings.chatModel = turnOn ? 'debate' : 'model:claude';
+  else S.settings.model = turnOn ? 'debate' : (S.settings.model === 'debate' ? 'claude:' : S.settings.model);
   saveSettings();
   renderComposerState();
   toast(turnOn ? `Debate on: ${(S.ai.debateParticipants || []).map(p => p.name).join(', ')}` : 'Debate off');
@@ -393,7 +401,7 @@ function buildModeOptions() {
   const sel = $('#modelSel');
   const lock = lockedMode();
   const opt = (v, l) => `<option value="${esc(v)}">${esc(l)}</option>`;
-  let h = `<optgroup label="Claude Code">${opt('claude:', 'Claude Code')}${opt('claude:opus', 'Opus')}${opt('claude:sonnet', 'Sonnet')}${opt('claude:haiku', 'Haiku')}</optgroup>`;
+  let h = inChatProject() ? '' : `<optgroup label="Claude Code">${opt('claude:', 'Claude Code')}${opt('claude:opus', 'Opus')}${opt('claude:sonnet', 'Sonnet')}${opt('claude:haiku', 'Haiku')}</optgroup>`;
   const avail = (S.ai && S.ai.available) || [];
   if (lock !== 'claude') {
     if (avail.length) h += `<optgroup label="Chat with">${avail.map(p => opt('model:' + p.id, p.name)).join('')}</optgroup>`;
@@ -544,7 +552,7 @@ function settingsDialog(tab = 'general') {
     title: 'Settings',
     wide: true,
     body: `
-      <div class="tabs" id="setTabs">${[['general', 'General'], ['ai', 'AI models'], ['debate', 'Debate'], ['sync', 'Sync']].map(([k, l]) => `<button data-tab="${k}">${l}</button>`).join('')}</div>
+      <div class="tabs" id="setTabs">${[['general', 'General'], ['ai', 'AI models'], ['debate', 'Debate'], ['sync', 'Sync'], ['import', 'Import']].map(([k, l]) => `<button data-tab="${k}">${l}</button>`).join('')}</div>
       <div class="tab" data-pane="general">
         <label class="field"><span>What should Claude call you?</span><input class="input" id="setName" value="${esc(st.name)}" placeholder="${esc((S.info && S.info.user) || '')}"></label>
         <div class="field"><span>Appearance</span><div class="seg" id="setTheme">
@@ -564,6 +572,9 @@ function settingsDialog(tab = 'general') {
       </div>
       <div class="tab" data-pane="ai">
         <p class="hint">Chat with these straight from the message box. Keys are stored only on this computer and aren't synced.</p>
+        <section class="prov"><div class="prov-head">${avatar('Claude')}<h3>Claude (chat)</h3><span class="pc-status"><span class="ok">${I.check} Uses your Claude plan</span></span></div>
+          <small class="muted-note" style="margin-top:-4px">Plain conversations with Claude, like claude.ai: no tools, no file changes. Runs through Claude Code, so there's no key and no extra cost.</small>
+          <label class="field"><span>Model</span><select class="input" id="ccModel"><option value="sonnet">Sonnet</option><option value="opus">Opus</option><option value="haiku">Haiku</option></select></label></section>
         ${providerCard('openwebui', 'Your Open WebUI model', `<label class="field"><span>Name to show</span><input class="input" data-f="label" placeholder="My model"></label>
           <label class="field"><span>Open WebUI address</span><input class="input mono" data-f="url" placeholder="http://homelab:3000"><small>Use its Tailscale name or IP so it works away from home.</small></label>
           <label class="field"><span>API key</span><input class="input mono" data-f="key" placeholder="sk-…" autocomplete="off"><small>In Open WebUI: Settings → Account → API keys. An admin has to turn on API keys first (Admin settings → Authentication).</small></label>`)}
@@ -583,7 +594,17 @@ function settingsDialog(tab = 'general') {
           <small class="muted-note">Each question goes to every model once per round, plus once to the moderator — so a 3-model, 2-round debate is 7 requests. It uses more of your plan and API credit than a normal message.</small>
         </div>
       </div>
-      <div class="tab" data-pane="sync"><div id="syncPane"></div></div>`,
+      <div class="tab" data-pane="sync"><div id="syncPane"></div></div>
+      <div class="tab" data-pane="import">
+        <p class="hint">Bring your chats and projects over from claude.ai. Projects come in as <strong>chat projects</strong> with their instructions, knowledge documents and memory; chats come in as Claude chats you can keep going.</p>
+        <ol class="steps">
+          <li>On <a href="https://claude.ai/settings/data-privacy-controls" target="_blank" rel="noopener">claude.ai</a>, open <strong>Settings → Privacy</strong> and click <strong>Export data</strong>.</li>
+          <li>Open the email from Anthropic and download the file (the link works for 24 hours).</li>
+          <li>Choose that file here. Importing again later only adds or updates what changed.</li>
+        </ol>
+        <div class="row-end"><span class="sy-msg" id="imMsg"></span><input type="file" id="imFile" accept=".zip,.json" hidden><button class="btn accent" id="imGo" type="button">${I.upload} Choose export file…</button></div>
+        <small class="muted-note">The export doesn't include the contents of files you attached in chats, so those show by name only. Text you attached is kept.</small>
+      </div>`,
     foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="setSave">Save</button>`,
   });
   const show = k => { $$('#setTabs button', m.el).forEach(b => b.classList.toggle('on', b.dataset.tab === k)); $$('.tab', m.el).forEach(p => { p.hidden = p.dataset.pane !== k; }); };
@@ -625,6 +646,7 @@ function settingsDialog(tab = 'general') {
   }
   $('#debOn', m.el).checked = !!a.debateEnabled;
   $('#setAutoTitle', m.el).checked = a.autoTitles !== false;
+  $('#ccModel', m.el).value = (a.claudeChat && a.claudeChat.model) || 'sonnet';
   const who = a.debate.participants || [];
   $('#debWho', m.el).innerHTML = [['claude', 'Claude'], ['openai', 'ChatGPT'], ['gemini', 'Gemini'], ['deepseek', 'DeepSeek']].map(([k, l]) => `<label class="check"><input type="checkbox" value="${k}" ${who.includes(k) ? 'checked' : ''}> ${l}</label>`).join('');
   $('#debRounds', m.el).value = String(a.debate.rounds || 2);
@@ -634,11 +656,30 @@ function settingsDialog(tab = 'general') {
   $('#debOn', m.el).onchange = syncDeb; syncDeb();
 
   renderSyncPane($('#syncPane', m.el));
+  $('#imGo', m.el).onclick = () => $('#imFile', m.el).click();
+  $('#imFile', m.el).onchange = async e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    const btn = $('#imGo', m.el), msg = $('#imMsg', m.el);
+    btn.disabled = true; msg.className = 'sy-msg info'; msg.textContent = `Importing ${f.name}…`;
+    try {
+      const r = await fetch('/api/import/claude', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || 'Import failed');
+      const parts = [
+        j.projects && `${j.projects} project${j.projects > 1 ? 's' : ''}`, j.chats && `${j.chats} chat${j.chats > 1 ? 's' : ''}`,
+        (j.chatsUpdated + j.projectsUpdated) && `${j.chatsUpdated + j.projectsUpdated} updated`, j.documents && `${j.documents} document${j.documents > 1 ? 's' : ''}`,
+      ].filter(Boolean);
+      msg.className = 'sy-msg ok'; msg.textContent = parts.length ? `Imported ${parts.join(', ')}.` : 'Everything was already up to date.';
+      await refreshSessions();
+    } catch (err) { msg.className = 'sy-msg'; msg.textContent = err.message; }
+    btn.disabled = false;
+  };
 
   $('#setSave', m.el).onclick = async () => {
     Object.assign(S.settings, { name: $('#setName', m.el).value.trim(), theme, cwd: $('#setCwd', m.el).value.trim(), perm: $('#setPerm', m.el).value });
     saveSettings();
-    const body = { autoTitles: $('#setAutoTitle', m.el).checked, debateEnabled: $('#debOn', m.el).checked, debate: {
+    const body = { claudeChat: { model: $('#ccModel', m.el).value }, autoTitles: $('#setAutoTitle', m.el).checked, debateEnabled: $('#debOn', m.el).checked, debate: {
       participants: $$('#debWho input:checked', m.el).map(i => i.value), rounds: +$('#debRounds', m.el).value,
       moderator: $('#debMod', m.el).value, claudeModel: $('#debClaude', m.el).value } };
     for (const id of ['openwebui', 'openai', 'gemini', 'deepseek']) {
@@ -779,6 +820,7 @@ async function attach(runId, token) {
   renderComposerState();
   refreshRuns().then(changed => { if (!changed) refreshSessions(); });
   setTimeout(refreshSessions, 6000); setTimeout(refreshSessions, 15000); // automatic titles arrive a few seconds later
+  loadUsage();
 }
 
 function liveTurn() {
@@ -1250,7 +1292,7 @@ function renderProjectPage() {
     <div class="pp-main">
       <div class="pp-head">
         <div class="pp-titles">
-          <div class="pp-kicker">${p.virtual ? I.folder + 'Folder' : I.box + 'Project'}</div>
+          <div class="pp-kicker">${projIcon(p)}${p.virtual ? 'Folder' : p.kind === 'chat' ? 'Chat project' : 'Code project'}${p.importedFrom ? ' · imported from claude.ai' : ''}</div>
           <h1>${esc(p.name)}</h1>
           ${p.description ? `<p class="pp-desc">${esc(p.description)}</p>` : `<button class="pp-link" data-act="details">Add a description</button>`}
         </div>
@@ -1281,10 +1323,10 @@ function renderProjectPage() {
           : `<div class="pp-drop" data-act="upload">${I.upload}<span>Add PDFs, docs, code or notes Claude should know about. Drop files here or click to upload.</span></div>`}
         <div class="pp-file-actions"><button class="btn small" data-act="upload">${I.upload}Upload</button><button class="btn small" data-act="text">${I.note}Add text</button></div>
       </section>
-      <section class="pp-card compact">
+      ${p.kind === 'chat' ? `<section class="pp-card compact"><div class="pp-card-head"><h3>${I.chat}Chat project</h3></div><div class="pp-card-sub" style="margin-top:4px">Chats here are conversations with Claude or your other AIs — no folder, no file changes.</div></section>` : `<section class="pp-card compact">
         <div class="pp-card-head"><h3>Folder</h3><button class="pp-link" data-act="folder">Change</button></div>
         <div class="pp-path" title="${esc(p.cwd)}">${esc(homeify(p.cwd))}</div>
-      </section>
+      </section>`}
     </aside>
   </div>`;
   placeComposer();
@@ -1333,18 +1375,29 @@ function projectDialog(p) {
   const m = modal({
     title: editing ? 'Edit project' : 'New project',
     body: `
+      ${editing ? '' : `<div class="kind-pick" id="pjKind">
+        <button type="button" data-k="code" class="on">${I.box}<strong>Code project</strong><small>Claude Code works in a folder on your computer — reads and edits files, runs commands.</small></button>
+        <button type="button" data-k="chat">${I.chat}<strong>Chat project</strong><small>Like claude.ai projects: instructions, knowledge files and memory, for talking things through.</small></button>
+      </div>`}
       <label class="field"><span>Name</span><input class="input" id="pjName" maxlength="120" value="${esc(p ? p.name : '')}" placeholder="e.g. Homelab server"></label>
       <label class="field"><span>Description <small>(optional)</small></span><input class="input" id="pjDesc" maxlength="1000" value="${esc(p ? p.description : '')}" placeholder="What is this project about?"></label>
-      <label class="field"><span>Folder Claude works in</span>
+      <label class="field" id="pjCwdField" ${p && p.kind === 'chat' ? 'hidden' : ''}><span>Folder Claude works in</span>
         <div class="input-row"><input class="input mono" id="pjCwd" value="${esc(p ? p.cwd : '')}" placeholder="New folder in ~/Claude Projects"><button class="btn" id="pjBrowse" type="button">Browse</button></div>
         <small>${editing ? 'Chats in this project read and write files here.' : 'Pick a code folder, or leave empty for a fresh one in your Claude Projects folder.'}</small>
       </label>`,
     foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="pjSave">${editing ? 'Save' : 'Create project'}</button>`,
   });
   const name = $('#pjName', m.el); name.focus();
+  let kind = p ? p.kind || 'code' : 'code';
+  $$('#pjKind button', m.el).forEach(b => b.onclick = () => {
+    kind = b.dataset.k;
+    $$('#pjKind button', m.el).forEach(x => x.classList.toggle('on', x === b));
+    $('#pjCwdField', m.el).hidden = kind === 'chat';
+    name.focus();
+  });
   $('#pjBrowse', m.el).onclick = () => folderPicker($('#pjCwd', m.el).value || (p && p.cwd), path => { $('#pjCwd', m.el).value = path; });
   const save = async () => {
-    const body = { name: name.value.trim(), description: $('#pjDesc', m.el).value.trim(), cwd: $('#pjCwd', m.el).value.trim() };
+    const body = { name: name.value.trim(), description: $('#pjDesc', m.el).value.trim(), cwd: kind === 'chat' ? '' : $('#pjCwd', m.el).value.trim(), kind };
     if (!body.name) { name.focus(); return; }
     try {
       if (editing) { if (!body.cwd) delete body.cwd; await patchProject(body); m.close(); }
@@ -1579,6 +1632,36 @@ function bindAttachments() {
     if (S.view && S.view.runId) { toast('Wait for the reply to finish, then attach'); return; }
     addFiles(files);
   });
+}
+
+/* ---------------- plan usage bar ---------------- */
+async function loadUsage() {
+  try { S.usage = (await api('/api/usage')).limits; } catch { return; }
+  renderUsage();
+}
+function renderUsage() {
+  const el = $('#usageBar'), L = S.usage || {};
+  const rows = [['five_hour', 'Current session'], ['seven_day', 'This week']].filter(([k]) => L[k]);
+  el.hidden = !rows.length;
+  if (!rows.length) return;
+  const when = ms => {
+    if (!ms) return '';
+    const d = new Date(ms), now = new Date();
+    const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    return d.toDateString() === now.toDateString() ? time : `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`;
+  };
+  el.innerHTML = rows.map(([k, label]) => {
+    const u = L[k];
+    const pct = typeof u.utilization === 'number' ? Math.round(u.utilization * 100) : null;
+    const level = u.status === 'rejected' || (pct != null && pct >= 90) ? 'hi' : u.status === 'allowed_warning' || (pct != null && pct >= 70) ? 'mid' : 'lo';
+    const text = u.status === 'rejected' ? 'Limit reached' : pct != null ? `${pct}% used` : u.status === 'allowed_warning' ? 'Getting close' : 'Within limit';
+    const reset = u.resetsAt ? ` · resets ${when(u.resetsAt)}` : '';
+    return `<div class="ub ${level}" title="${esc(label)}: ${esc(text + reset)}${u.usingOverage ? ' (using extra usage)' : ''}">
+      <span class="ub-label">${esc(label)}</span>
+      <span class="ub-track"><span class="ub-fill" style="width:${pct != null ? Math.max(2, Math.min(100, pct)) : u.status === 'rejected' ? 100 : u.status === 'allowed_warning' ? 80 : 30}%"></span></span>
+      <span class="ub-text">${esc(text)}${esc(reset)}</span>
+    </div>`;
+  }).join('');
 }
 
 /* ---------------- "/" menu: skills, commands, plugins ---------------- */
@@ -1821,7 +1904,13 @@ function bind() {
   };
   $('#permSel').value = S.settings.perm;
   $('#debateToggle').onclick = toggleDebate;
-  $('#modelSel').onchange = () => { if (!lockedMode()) { S.settings.model = $('#modelSel').value; saveSettings(); } else S.view.claudeModel = $('#modelSel').value; renderComposerState(); };
+  $('#modelSel').onchange = () => {
+    const val = $('#modelSel').value;
+    if (lockedMode()) S.view.claudeModel = val;
+    else if (inChatProject()) { S.settings.chatModel = val; saveSettings(); }
+    else { S.settings.model = val; saveSettings(); }
+    renderComposerState();
+  };
   $('#permSel').onchange = () => { S.settings.perm = $('#permSel').value; saveSettings(); renderComposerState(); };
 
   $('#suggestions').innerHTML = SUGGESTIONS.map((s, i) => `<button class="sugg" data-k="${i}">${I[s.icon]}${esc(s.label)}</button>`).join('');
@@ -1884,6 +1973,7 @@ async function init() {
   route();
   setInterval(refreshRuns, 2500);
   checkApp(); setInterval(checkApp, 60000);
+  loadUsage(); setInterval(loadUsage, 60000);
   loadAi();
   loadSync(); setInterval(loadSync, 30000);
   setInterval(() => { if (!S.runs.length) refreshSessions(); }, 20000);

@@ -5,7 +5,9 @@ const a = process.argv.slice(2);
 if (a.includes('--version')) { console.log('0.0.0 (fake)'); process.exit(0); }
 let input = ''; process.stdin.on('data', d => input += d); process.stdin.on('end', () => {
   const out = o => process.stdout.write(JSON.stringify(o) + '\n');
+  out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', utilization: 0.25, resetsAt: Date.now() + 3600e3, rateLimitType: 'five_hour' } });
   if (a.includes('--tools')) {
+    out({ type: 'system', subtype: 'init', session_id: 'chat-session-1' });
     const t = /final answer/i.test(input) ? 'CONSENSUS: use Tailscale.' : 'Claude answer.';
     out({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: t } } });
     return out({ type: 'result', is_error: false, result: t });

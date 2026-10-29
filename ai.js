@@ -15,6 +15,7 @@ let cfg = {};
 const DEFAULTS = {
   debateEnabled: false,
   autoTitles: true,
+  claudeChat: { model: 'sonnet' },
   openwebui: { url: '', key: '', model: '', label: 'My model' },
   openai: { key: '', model: '' },
   gemini: { key: '', model: '' },
@@ -47,6 +48,7 @@ const PROVIDERS = {
   openwebui: { name: 'My model', base: () => String(cfg.openwebui.url || '').replace(/\/+$/, ''), chat: '/api/chat/completions', models: '/api/models' },
 };
 const providerName = id => (id === 'openwebui' ? cfg.openwebui.label || 'My model' : (PROVIDERS[id] || {}).name || id);
+const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
 const configured = id => {
   if (id === 'claude') return true;
   if (id === 'openwebui') return !!(cfg.openwebui.url && cfg.openwebui.model);
@@ -64,7 +66,8 @@ function publicConfig() {
     gemini: { model: cfg.gemini.model, key: mask(cfg.gemini.key) },
     deepseek: { model: cfg.deepseek.model, key: mask(cfg.deepseek.key) },
     debate: cfg.debate,
-    available: ['openwebui', 'openai', 'gemini', 'deepseek'].filter(configured).map(id => ({ id, name: providerName(id), model: cfg[id].model })),
+    claudeChat: cfg.claudeChat,
+    available: [{ id: 'claude', name: 'Claude', model: cap(cfg.claudeChat.model) }, ...['openwebui', 'openai', 'gemini', 'deepseek'].filter(configured).map(id => ({ id, name: providerName(id), model: cfg[id].model }))],
     debateParticipants: debateParticipants().map(id => ({ id, name: providerName(id) })),
   };
 }
@@ -87,6 +90,7 @@ function updateConfig(body) {
   }
   if (typeof body.debateEnabled === 'boolean') cfg.debateEnabled = body.debateEnabled;
   if (typeof body.autoTitles === 'boolean') cfg.autoTitles = body.autoTitles;
+  if (body.claudeChat && typeof body.claudeChat.model === 'string' && /^[\w.\-\[\]]{1,60}$/.test(body.claudeChat.model)) cfg.claudeChat.model = body.claudeChat.model;
   if (body.debate && typeof body.debate === 'object') {
     const d = body.debate;
     if (Array.isArray(d.participants)) cfg.debate.participants = d.participants.filter(p => ['claude', 'openai', 'gemini', 'deepseek'].includes(p));
@@ -198,19 +202,37 @@ async function streamCompletion(id, messages, { onText, signal } = {}) {
 
 /** Claude as a plain chat participant, through the Claude Code CLI with all tools off. */
 const flat = c => typeof c === 'string' ? c : Array.isArray(c) ? c.filter(p => p.type === 'text').map(p => p.text).join('\n\n') : '';
-function claudeCompletion(messages, { onText, signal, attachments = [] } = {}) {
+const MAX_HISTORY_CHARS = 350000; // keep very long imported chats inside Claude's context window
+/**
+ * Claude through the Claude Code CLI with tools off. Two uses:
+ *  - debate participant: one-off, nothing saved
+ *  - plain "Claude" chat (opts.chat): a Claude Code session of its own that later turns resume,
+ *    so only the new message is sent each time; opts.chat.onSession receives the session id
+ */
+function claudeCompletion(messages, { onText, signal, attachments = [], chat = null } = {}) {
   return new Promise((resolve, reject) => {
     const sys = messages.filter(m => m.role === 'system').map(m => flat(m.content)).join('\n\n');
     const convo = messages.filter(m => m.role !== 'system').map(m => ({ ...m, content: flat(m.content) }));
     if (attachments.length && convo.length) convo[convo.length - 1].content += `\n\n(The user attached: ${attachments.join(', ')}. Open them with the Read tool if they matter.)`;
-    const input = (sys ? `<instructions>\n${sys}\n</instructions>\n\n` : '') + (convo.length > 1
-      ? convo.slice(0, -1).map(m => `<${m.role}>\n${m.content}\n</${m.role}>`).join('\n\n') + '\n\n' + convo[convo.length - 1].content
-      : (convo[0] || {}).content || '');
-    const dir = path.join(deps.APP_DIR, 'debate');
+    let input;
+    if (chat && chat.resume) input = (convo[convo.length - 1] || {}).content || '';
+    else {
+      let earlier = convo.slice(0, -1).map(m => `<${m.role}>\n${m.content}\n</${m.role}>`);
+      let total = earlier.reduce((n, t) => n + t.length, 0), dropped = 0;
+      while (total > MAX_HISTORY_CHARS && earlier.length) { total -= earlier.shift().length; dropped++; }
+      input = (sys ? `<instructions>\n${sys}\n</instructions>\n\n` : '') +
+        (earlier.length ? `${dropped ? `(The ${dropped} earliest messages of this conversation are left out because it's so long.)\n\n` : ''}<earlier_conversation>\n${earlier.join('\n\n')}\n</earlier_conversation>\n\n` : '') +
+        ((convo[convo.length - 1] || {}).content || '');
+    }
+    const dir = path.join(deps.APP_DIR, chat ? 'claude-chats' : 'debate');
     fs.mkdirSync(dir, { recursive: true });
-    const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--no-session-persistence', '--tools', attachments.length ? 'Read' : '',
-      '--model', cfg.debate.claudeModel || 'sonnet',
-      '--system-prompt', attachments.length ? 'You are Claude, taking part in a text discussion with other AI assistants. Answer directly in Markdown. You can only read the attached files.' : 'You are Claude, taking part in a text discussion with other AI assistants. Answer directly in Markdown. You have no tools.'];
+    const sysPrompt = chat
+      ? `You are Claude, an AI assistant made by Anthropic, chatting with the user in Roundtable, a desktop chat app. Be helpful and answer in Markdown. ${attachments.length ? 'You can read files the user attaches, but you have no other tools.' : 'You have no tools in this chat.'}`
+      : `You are Claude, taking part in a text discussion with other AI assistants. Answer directly in Markdown. ${attachments.length ? 'You can only read the attached files.' : 'You have no tools.'}`;
+    const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--tools', attachments.length ? 'Read' : '',
+      '--model', chat ? (chat.model || cfg.claudeChat.model || 'sonnet') : (cfg.debate.claudeModel || 'sonnet'), '--system-prompt', sysPrompt];
+    if (!chat) args.push('--no-session-persistence');
+    if (chat && chat.resume) args.push('--resume', chat.resume);
     for (const d of new Set(attachments.map(a => path.dirname(a)))) args.push('--add-dir', d);
     let proc;
     try { proc = deps.spawnClaude(args, { cwd: dir, env: process.env }); } catch (e) { return reject(e); }
@@ -224,6 +246,8 @@ function claudeCompletion(messages, { onText, signal, attachments = [] } = {}) {
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
         let o; try { o = JSON.parse(line); } catch { continue; }
+        if (o.type === 'rate_limit_event' && deps.onRateLimit) deps.onRateLimit(o);
+        if (o.type === 'system' && o.subtype === 'init' && o.session_id && chat && chat.onSession) chat.onSession(o.session_id);
         if (o.type === 'stream_event' && o.event && o.event.type === 'content_block_delta' && o.event.delta && o.event.delta.type === 'text_delta') {
           text += o.event.delta.text || ''; if (onText) onText(o.event.delta.text || '', text);
         } else if (o.type === 'result') final = o;

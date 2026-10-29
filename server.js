@@ -42,9 +42,27 @@ function parseAttachments(s) {
   if (!m) return [];
   return m[1].split('\n').filter(l => l.startsWith('- ')).map(l => l.slice(2).trim()).map(p => ({ name: p.split(/[\\/]/).pop(), url: fs.existsSync(p) ? uploadUrl(p) : null, image: IMG_RE.test(p) }));
 }
-ai.init({ APP_DIR, spawnClaude: (...a) => spawnClaude(...a) });
+// Plan usage (5-hour and weekly limits), as Claude Code reports it during each reply
+const USAGE_FILE = path.join(APP_DIR, 'usage.json');
+let usage = {};
+try { usage = JSON.parse(fs.readFileSync(USAGE_FILE, 'utf8')); } catch {}
+function noteRateLimit(o) {
+  const i = o && o.rate_limit_info;
+  if (!i || !i.rateLimitType) return;
+  const prev = usage[i.rateLimitType] || {};
+  usage[i.rateLimitType] = {
+    status: i.status || prev.status || 'allowed',
+    utilization: typeof i.utilization === 'number' ? i.utilization : (prev.resetsAt === i.resetsAt ? prev.utilization : undefined),
+    resetsAt: i.resetsAt || prev.resetsAt || null,
+    usingOverage: !!i.isUsingOverage,
+    updated: Date.now(),
+  };
+  fsp.writeFile(USAGE_FILE, JSON.stringify(usage)).catch(() => {});
+}
+ai.init({ APP_DIR, spawnClaude: (...a) => spawnClaude(...a), onRateLimit: noteRateLimit });
 let sync = null; // GitHub sync, set up below
 const commands = require('./commands');
+const importer = require('./import');
 commands.init({ claudeHome: CLAUDE_HOME });
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const IS_WIN = process.platform === 'win32';
@@ -274,7 +292,7 @@ function projectIdFor(info) {
   if (m.projectId && m.projectId !== 'none' && store.projects[m.projectId]) return m.projectId;
   if (m.projectId !== 'none') {
     const owner = Object.values(store.projects)
-      .filter(p => p.cwd && info.cwd && path.resolve(p.cwd) === path.resolve(info.cwd))
+      .filter(p => p.kind !== 'chat' && p.cwd && info.cwd && path.resolve(p.cwd) === path.resolve(info.cwd))
       .sort((a, b) => (a.created || '').localeCompare(b.created || ''))[0];
     if (owner) return owner.id;
   }
@@ -297,7 +315,7 @@ function listProjects(sessions) {
   return [...out.values()].sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''));
 }
 const publicProject = p => ({
-  id: p.id, name: p.name, description: p.description || '', instructions: p.instructions || '', cwd: localPath(p.cwd),
+  id: p.id, kind: p.kind === 'chat' ? 'chat' : 'code', importedFrom: p.importedFrom || null, name: p.name, description: p.description || '', instructions: p.instructions || '', cwd: p.kind === 'chat' ? null : localPath(p.cwd),
   memoryEnabled: p.memoryEnabled !== false, memoryUpdated: p.memoryUpdated || null, created: p.created, updated: p.updated, virtual: false,
 });
 
@@ -566,6 +584,7 @@ async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowed
       if (!line) continue;
       let o; try { o = JSON.parse(line); } catch { pushEvent(run, { kind: 'stderr', text: line + '\n' }); continue; }
       if (o.type === 'system' && o.subtype === 'init') commands.noteInit(run.cwd, o);
+      if (o.type === 'rate_limit_event') noteRateLimit(o);
       if (o.type === 'system' && o.subtype === 'init' && o.session_id) {
         if (!run.sessionId && run.projectId) { meta.sessions[o.session_id] = { ...(meta.sessions[o.session_id] || {}), projectId: run.projectId }; saveMeta(); }
         run.sessionId = o.session_id;
@@ -727,7 +746,15 @@ async function startAppRun({ chat, prompt, attachments = [] }) {
         let last = 0;
         const msgs = [...(context ? [{ role: 'system', content: context }] : []), ...history, { role: 'user', content: await apiContent(prompt, atts) }];
         reply.speaker = speaker;
+        const extra = {};
+        if (chat.provider === 'claude') {
+          // plain Claude chats keep a Claude Code session of their own (only on the computer that made it)
+          const resume = chat.cliSession && await findSessionFile(chat.cliSession) ? chat.cliSession : null;
+          extra.chat = { resume, onSession: id => { chat.cliSession = id; } };
+          extra.attachments = attachments;
+        }
         reply.text = await ai.complete(chat.provider, msgs, {
+          ...extra,
           signal: run.abort.signal,
           onText: (_, full) => { const now = Date.now(); if (now - last > 80) { last = now; snap({ role: 'assistant', speaker, blocks: [{ type: 'text', text: full, draft: true }] }); } },
         });
@@ -818,6 +845,22 @@ async function route(req, res) {
   }
   if (p === '/api/sync/disconnect' && m === 'POST') return send(res, 200, sync.disconnect());
 
+  if (p === '/api/import/claude' && m === 'POST') {
+    // the export file, sent as-is (it can be large)
+    const chunks = []; let size = 0;
+    try {
+      await new Promise((resolve, reject) => {
+        req.on('data', c => { size += c.length; if (size > 1.5e9) { reject(new Error('That file is over 1.5 GB')); req.destroy(); } else chunks.push(c); });
+        req.on('end', resolve); req.on('error', reject);
+      });
+      const result = await importer.importExport(Buffer.concat(chunks), {
+        APP_DIR, UPLOADS_DIR, CHATS_DIR, store, saveProjects, filesDir, memoryFile, loadChat, saveChat,
+      });
+      if (sync) sync.soon(3000);
+      return send(res, 200, result);
+    } catch (e) { return send(res, 400, { error: e.message }); }
+  }
+
   if (p === '/api/uploads' && m === 'POST') {
     const body = await readBody(req, 40e6);
     const data = Buffer.from(String(body.data || ''), 'base64');
@@ -836,6 +879,18 @@ async function route(req, res) {
     const types = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.pdf': 'application/pdf' };
     res.writeHead(200, { 'Content-Type': types[path.extname(fp).toLowerCase()] || 'application/octet-stream', 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'" });
     return fs.createReadStream(fp).pipe(res);
+  }
+
+  if (p === '/api/usage' && m === 'GET') {
+    const now = Date.now();
+    const limits = {};
+    for (const [k, v] of Object.entries(usage)) {
+      if (!v) continue;
+      const ms = typeof v.resetsAt === 'number' ? (v.resetsAt < 1e12 ? v.resetsAt * 1000 : v.resetsAt) : null;
+      // a window that has reset since we last heard is back to zero
+      limits[k] = ms && ms < now ? { status: 'allowed', utilization: 0, resetsAt: null, stale: true } : { ...v, resetsAt: ms };
+    }
+    return send(res, 200, { limits });
   }
 
   if (p === '/api/commands' && m === 'GET') {
@@ -865,6 +920,14 @@ async function route(req, res) {
     const body = await readBody(req);
     const name = String(body.name || '').trim().slice(0, 120);
     if (!name) return send(res, 400, { error: 'Give the project a name' });
+    if (body.kind === 'chat') {
+      const now = new Date().toISOString();
+      const id = 'p-' + crypto.randomBytes(6).toString('hex');
+      store.projects[id] = { id, kind: 'chat', name, description: String(body.description || '').slice(0, 1000), instructions: String(body.instructions || ''), memoryEnabled: true, created: now, updated: now };
+      saveProjects();
+      await fsp.mkdir(filesDir(id), { recursive: true });
+      return send(res, 200, { project: publicProject(store.projects[id]) });
+    }
     let cwd = String(body.cwd || '').trim();
     if (cwd.startsWith('~')) cwd = path.join(os.homedir(), cwd.slice(1));
     if (!cwd) cwd = path.join(os.homedir(), 'Claude Projects', safeName(name));
@@ -973,7 +1036,7 @@ async function route(req, res) {
       if (typeof body.description === 'string') pr.description = body.description.slice(0, 1000);
       if (typeof body.instructions === 'string') pr.instructions = body.instructions.slice(0, 50000);
       if (typeof body.memoryEnabled === 'boolean') pr.memoryEnabled = body.memoryEnabled;
-      if (typeof body.cwd === 'string' && body.cwd.trim()) {
+      if (typeof body.cwd === 'string' && body.cwd.trim() && pr.kind !== 'chat') {
         let cwd = body.cwd.trim(); if (cwd.startsWith('~')) cwd = path.join(os.homedir(), cwd.slice(1));
         try { if (!fs.statSync(cwd).isDirectory()) throw 0; } catch { return send(res, 400, { error: `Folder not found: ${cwd}` }); }
         pr.cwd = path.resolve(cwd);
@@ -1096,6 +1159,7 @@ async function route(req, res) {
     } else if (body.projectId && ID_RE.test(body.projectId)) {
       project = await getProject(body.projectId);
       if (!project) return send(res, 404, { error: 'Project not found' });
+      if (project.kind === 'chat') return send(res, 400, { error: 'This is a chat project — pick Claude or another model instead of Claude Code' });
       cwd = project.cwd;
       // a project folder from another computer: same place under this computer's user folder
       if (!fs.existsSync(cwd)) { const t = translateHome(cwd); if (t) cwd = t; }
@@ -1103,7 +1167,7 @@ async function route(req, res) {
     }
     else {
       // a new chat in a folder that belongs to a project joins that project
-      const owner = Object.values(store.projects).filter(pr => path.resolve(pr.cwd) === path.resolve(cwd)).sort((a, b) => (a.created || '').localeCompare(b.created || ''))[0];
+      const owner = Object.values(store.projects).filter(pr => pr.kind !== 'chat' && pr.cwd && path.resolve(pr.cwd) === path.resolve(cwd)).sort((a, b) => (a.created || '').localeCompare(b.created || ''))[0];
       if (owner) project = owner;
     }
     // folder-only projects with nothing set up yet don't need any shared context

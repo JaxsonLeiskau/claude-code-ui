@@ -28,8 +28,12 @@ All your Claude Code sessions in a sidebar, claude.ai-style Projects with shared
 - **Search** across chat titles and the full text of every message (`Ctrl/⌘+K`).
 - **Live streaming** replies with readable tool cards: shell commands with output, file edits as red/green diffs, to-do lists, sub-agents, web fetches.
 - **Permissions without the guesswork** — pick *Ask first*, *Accept edits*, *Plan mode* or *Bypass*. If Claude gets blocked on a tool, one click allows it and continues.
+- **Import from claude.ai** — bring your claude.ai chats and projects over from claude.ai's data export (Settings → Import). Projects keep their instructions, knowledge documents and memory, and you can keep chatting in any imported chat.
+- **Code projects and chat projects** — code projects give Claude Code a folder to work in; chat projects work like claude.ai projects (instructions, knowledge, memory) with plain Claude chats or your other AIs, no folder needed.
+- **Plain Claude chats** — pick *Claude* in the message box for a normal conversation, like claude.ai: no tools, no file changes, on your Claude plan.
+- **Usage bar** — how much of your plan's 5-hour and weekly limits you've used, and when they reset, under the message box.
 - **Pictures and files** — drag and drop anywhere in the window, paste with Ctrl+V (screenshots too), or use the paperclip. Claude Code opens them itself (images, PDFs, code); other models get images directly and text files inline.
-- **Several windows at once** — File → New Window (Ctrl+Shift+N), or Ctrl-click / middle-click a chat. Each window works on its own chat and they all run at the same time.
+- **Several windows at once** — File → New Window (Ctrl+Shift+N), launch the app again, or Ctrl-click / middle-click a chat. Each window works on its own chat and they all run at the same time.
 - **Automatic chat titles** — after the first reply, Claude names the chat in a few words, like the Claude apps. Your own renames always win; turn it off in Settings.
 - **Type `/` for skills and commands** — like in the terminal and IDE: your skills, custom commands, plugin skills, and the built-ins that work here (`/model`, `/config`, `/mcp`…), with descriptions. Arrow keys and Enter or Tab to pick; Tab completes the first match even with the menu closed.
 - **Model picker** (Opus / Sonnet / Haiku), **folder picker** for new chats, and a **stop** button (or `Esc`).
@@ -165,6 +169,7 @@ Environment variables, mostly useful with `npm run web`:
 ```
 server.js            local API, projects, runs the claude CLI
 commands.js          the / menu: finds skills, commands and plugins
+import.js            imports a claude.ai data export
 ai.js                Open WebUI / ChatGPT / Gemini chats and debate mode
 sync.js              sync between computers through a private GitHub repo
 electron/main.js     desktop window, menu, auto-updates, PATH fix-up
