@@ -13,6 +13,8 @@ The owner isn't a programmer: explain changes in plain language, and keep the ap
 - `sync.js` — sync through a private GitHub repo via the GitHub REST API (three-way compare per file).
 - `commands.js` — the `/` menu (skills, commands, plugins, headless-safe built-ins).
 - `import.js` — imports claude.ai data exports (old single zip and new split zips / manifest).
+- `remote.js` — optional phone access: a second listener (default port 3500) that only answers Tailscale
+  addresses and needs a password sign-in (cookie session, lockout after failed tries).
 - `electron/main.js` + `electron/preload.js` — windows, menu, auto-updates, claude.ai export downloads.
 - `public/` — the whole UI in plain HTML/CSS/vanilla JS (`app.js`, `style.css`, `md.js`). No build step,
   no frameworks, no runtime dependencies. Keep it that way.
@@ -41,6 +43,8 @@ The owner isn't a programmer: explain changes in plain language, and keep the ap
 - Windows is the main platform: paths with spaces, `claude` is a `.cmd` (spawned through the shell
   with quoting — see `spawnClaude`/`winQuote`), and temp folders may stay locked briefly.
 - The server only accepts requests from this computer (Host/Origin checks). Don't loosen that.
+  The one deliberate exception is phone access in `remote.js` (opt-in, Tailscale-only, password); keep its checks
+  at least as strict, and keep `/api/remote*` and updates off-limits from phones.
 - API keys and the sync token stay on each computer and are never synced or logged.
 - The appId `local.claude-code-ui` and the data-folder migration from `~/.claude-code-ui` must stay,
   or existing installs stop updating / lose data.

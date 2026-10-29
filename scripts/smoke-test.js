@@ -119,6 +119,32 @@ const { start } = require('../server.js');
   const eocd = Buffer.alloc(22); eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(1, 8); eocd.writeUInt16LE(1, 10); eocd.writeUInt32LE(cdBuf.length, 12); eocd.writeUInt32LE(body.length, 16);
   assert.strictEqual(readZip(Buffer.concat([body, cdBuf, eocd])).get('conversations.json')().toString(), '[]', 'reads zip files');
 
+  // Phone access (Tailscale only, password, sign-in cookie)
+  const { _test: rt } = require('../remote.js');
+  assert.ok(rt.isTailscale('100.101.5.9') && rt.isTailscale('::ffff:100.64.0.1') && rt.isTailscale('fd7a:115c:a1e0::1'), 'accepts Tailscale addresses');
+  assert.ok(!rt.isTailscale('100.128.0.1') && !rt.isTailscale('192.168.1.5') && !rt.isTailscale('8.8.8.8'), 'refuses other addresses');
+  const rpost = b => fetch(base + '/api/remote', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json());
+  assert.ok(/password first/i.test((await rpost({ enabled: true })).error), 'needs a password before turning on');
+  assert.ok(/8 characters/.test((await rpost({ password: 'short' })).error), 'refuses short passwords');
+  const rport = 3600 + Math.floor(Math.random() * 300);
+  const on = await rpost({ password: 'correct horse', port: rport, enabled: true });
+  assert.ok(on.enabled && on.running, 'phone access turns on: ' + JSON.stringify(on));
+  const rbase = `http://127.0.0.1:${rport}`;
+  assert.ok((await (await fetch(rbase + '/')).text()).includes('/api/remote/login'), 'shows the sign-in page first');
+  assert.strictEqual((await fetch(rbase + '/api/sessions')).status, 401, 'API needs sign-in');
+  const login = pw => fetch(rbase + '/api/remote/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) });
+  assert.strictEqual((await login('wrong password')).status, 401, 'wrong password refused');
+  const ok = await login('correct horse');
+  assert.strictEqual(ok.status, 200, 'right password signs in');
+  const ck = String(ok.headers.get('set-cookie')).split(';')[0];
+  assert.ok(/HttpOnly/.test(ok.headers.get('set-cookie')), 'cookie is HttpOnly');
+  assert.strictEqual((await fetch(rbase + '/api/sessions', { headers: { cookie: ck } })).status, 200, 'signed-in phone can use the app');
+  assert.strictEqual((await fetch(rbase + '/api/remote', { method: 'POST', headers: { cookie: ck, 'Content-Type': 'application/json' }, body: '{"enabled":false}' })).status, 403, 'phone can\'t change phone settings');
+  assert.strictEqual((await fetch(rbase + '/api/sessions', { headers: { cookie: ck, origin: 'http://evil.example' } })).status, 403, 'other websites are refused');
+  for (let i = 0; i < 5; i++) await login('nope nope');
+  assert.strictEqual((await login('correct horse')).status, 429, 'too many wrong tries locks sign-in');
+  assert.ok(!(await rpost({ enabled: false })).running, 'phone access turns off');
+
   const page = await fetch(base + '/');
   assert.ok((await page.text()).includes('id="composer"'), 'serves the UI');
 

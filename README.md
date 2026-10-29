@@ -36,6 +36,7 @@ All your Claude Code sessions in a sidebar, claude.ai-style Projects with shared
 - **Several windows at once** — File → New Window (Ctrl+Shift+N), launch the app again, or Ctrl-click / middle-click a chat. Each window works on its own chat and they all run at the same time.
 - **Automatic chat titles** — after the first reply, Claude names the chat in a few words, like the Claude apps. Your own renames always win; turn it off in Settings.
 - **Type `/` for skills and commands** — like in the terminal and IDE: your skills, custom commands, plugin skills, and the built-ins that work here (`/model`, `/config`, `/mcp`…), with descriptions. Arrow keys and Enter or Tab to pick; Tab completes the first match even with the menu closed.
+- **Phone access** (optional, off by default) — use the whole app from your phone or another device over **Tailscale**: Settings → Phone, set a password and turn it on, then open the address it shows in your phone's browser and *Add to Home Screen*. Only Tailscale devices can reach it, and every device has to sign in. Your computer does the work, so it needs to be on with Roundtable running (closing the windows keeps it in the system tray).
 - **Model picker** (Opus / Sonnet / Haiku), **folder picker** for new chats, and a **stop** button (or `Esc`).
 - Keeps working in the background — switch chats while Claude runs; a spinner marks busy chats, and you re-attach to the live output when you come back.
 - Rename, star and delete chats. Deleted transcripts go to `~/.roundtable/trash`, never erased.
@@ -86,6 +87,14 @@ After that it syncs every few minutes and after each reply; there's also **Sync 
 - **Continuing on another computer:** if the chat's folder doesn't exist there, the app asks which folder to use.
 - **Same chat on two computers at once:** both versions are kept — the other one appears as "(copy from other device)".
 - **Deleting** a chat or project on one computer deletes it everywhere (it goes to `~/.roundtable/trash`).
+
+## Use it from your phone
+
+1. Install Tailscale on your phone and sign in to the same account as your computer.
+2. In Roundtable on the computer: **Settings → Phone**, set a password (8+ characters) and turn it on. Allow it through the Windows firewall if asked (private networks).
+3. On the phone, with Tailscale on, open the address shown there (like `http://my-pc:3500`), sign in, and use *Add to Home Screen* for an app icon.
+
+Phone settings (and app updates) can only be changed on the computer itself. Changing the password or *Sign out all devices* signs every phone out.
 
 ## Add other AI models
 

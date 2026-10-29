@@ -558,7 +558,7 @@ function settingsDialog(tab = 'general') {
     title: 'Settings',
     wide: true,
     body: `
-      <div class="tabs" id="setTabs">${[['general', 'General'], ['ai', 'AI models'], ['debate', 'Debate'], ['sync', 'Sync'], ['import', 'Import']].map(([k, l]) => `<button data-tab="${k}">${l}</button>`).join('')}</div>
+      <div class="tabs" id="setTabs">${[['general', 'General'], ['ai', 'AI models'], ['debate', 'Debate'], ['sync', 'Sync'], ['import', 'Import'], ...(S.app && S.app.remote ? [] : [['phone', 'Phone']])].map(([k, l]) => `<button data-tab="${k}">${l}</button>`).join('')}</div>
       <div class="tab" data-pane="general">
         <label class="field"><span>What should Claude call you?</span><input class="input" id="setName" value="${esc(st.name)}" placeholder="${esc((S.info && S.info.user) || '')}"></label>
         <div class="field"><span>Appearance</span><div class="seg" id="setTheme">
@@ -601,6 +601,7 @@ function settingsDialog(tab = 'general') {
         </div>
       </div>
       <div class="tab" data-pane="sync"><div id="syncPane"></div></div>
+      <div class="tab" data-pane="phone"><div id="phonePane"></div></div>
       <div class="tab" data-pane="import">
         <p class="hint">Bring your chats and projects over from claude.ai. Projects come in as <strong>chat projects</strong> with their instructions, knowledge documents and memory; chats come in as Claude chats you can keep going.</p>
         <ol class="steps">
@@ -662,6 +663,7 @@ function settingsDialog(tab = 'general') {
   $('#debOn', m.el).onchange = syncDeb; syncDeb();
 
   renderSyncPane($('#syncPane', m.el));
+  if (!(S.app && S.app.remote)) renderPhonePane($('#phonePane', m.el));
   $('#imGo', m.el).onclick = () => $('#imFile', m.el).click();
   $('#imFile', m.el).onchange = async e => {
     // projects first, so chats can join them
@@ -1525,6 +1527,38 @@ async function installUpdate() {
   try { await api('/api/app/install-update', { method: 'POST' }); toast('Updating…'); } catch (e) { toast(e.message); }
 }
 
+
+/* ---------------- phone access ---------------- */
+async function renderPhonePane(pane) {
+  let st;
+  try { st = await api('/api/remote'); } catch (e) { pane.innerHTML = `<p class="hint">${esc(e.message)}</p>`; return; }
+  const on = st.enabled && st.running;
+  pane.innerHTML = `
+    <label class="switch-row"><span><strong>Phone access</strong><small>Use Roundtable from your phone or another device over Tailscale — everything runs here on this computer, which needs to stay on with Roundtable open.</small></span><input type="checkbox" class="switch" id="phOn" ${st.enabled ? 'checked' : ''}></label>
+    <label class="field"><span>${st.hasPassword ? 'Change password' : 'Password'}</span><input class="input" type="password" id="phPw" autocomplete="new-password" placeholder="${st.hasPassword ? 'Leave empty to keep the current one' : 'At least 8 characters'}"><small>Your phone asks for this once, then stays signed in.</small></label>
+    <div class="row-end"><span class="sy-msg" id="phMsg">${st.error ? esc(st.error) : ''}</span><button class="btn primary" id="phSave" type="button">Save</button></div>
+    ${on ? `<div class="sy-card">
+      <div class="sy-row">${I.check}<div><strong>On your phone, open:</strong>${st.urls.length ? st.urls.map(u => `<code class="ph-url">${esc(u)}</code>`).join('') : '<small>Tailscale isn\u2019t connected on this computer — start it, then reopen this tab.</small>'}</div></div>
+      <ol class="steps">
+        <li>Make sure Tailscale is on, on your phone.</li>
+        <li>Open the first address in Safari or Chrome and sign in with your password. (If the name doesn't work, use the number one.)</li>
+        <li>For an app icon: Share → <strong>Add to Home Screen</strong> (iPhone) or ⋮ → <strong>Add to Home screen</strong> (Android).</li>
+      </ol>
+      <div class="row-end"><small class="muted-note" style="flex:1">${st.devices} device${st.devices === 1 ? '' : 's'} signed in</small>${st.devices ? '<button class="btn small" id="phOut" type="button">Sign out all devices</button>' : ''}</div>
+    </div>
+    <p class="hint">If Windows asks whether Roundtable may use the network, allow it. Closing Roundtable's windows keeps it running in the tray (by the clock) while phone access is on; quit it from there.</p>` : ''}`;
+  const save = async body => {
+    try { await api('/api/remote', { method: 'POST', body }); toast('Phone access updated'); renderPhonePane(pane); }
+    catch (e) { $('#phMsg', pane).textContent = e.message; }
+  };
+  $('#phSave', pane).onclick = () => save({ enabled: $('#phOn', pane).checked, ...($('#phPw', pane).value ? { password: $('#phPw', pane).value } : {}) });
+  $('#phOn', pane).onchange = () => {
+    if ($('#phOn', pane).checked && !st.hasPassword && !$('#phPw', pane).value) { $('#phMsg', pane).textContent = 'Set a password, then press Save.'; $('#phPw', pane).focus(); return; }
+    $('#phSave', pane).click();
+  };
+  const out = $('#phOut', pane);
+  if (out) out.onclick = () => save({ signOutAll: true });
+}
 
 /* ---------------- sync between devices ---------------- */
 async function loadSync() {

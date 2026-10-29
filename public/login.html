@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Roundtable</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="icon" href="/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Roundtable">
+  <meta name="theme-color" content="#262624">
+  <style>
+    :root { --bg: #faf9f5; --surface: #fff; --text: #141413; --muted: #73726c; --border: rgba(31,30,29,.18); --accent: #c96442; --danger: #b4372f; color-scheme: light; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #262624; --surface: #30302e; --text: #faf9f5; --muted: #a6a39b; --border: rgba(222,220,209,.2); --accent: #d97757; --danger: #e8776d; color-scheme: dark; } }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body { background: var(--bg); color: var(--text); font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; display: grid; place-items: center; padding: 24px 16px; }
+    main { width: 100%; max-width: 360px; display: flex; flex-direction: column; align-items: center; gap: 18px; text-align: center; }
+    img { width: 72px; height: 72px; border-radius: 18px; }
+    h1 { margin: 0; font: 400 30px/1.2 ui-serif, Georgia, "Times New Roman", serif; }
+    p { margin: 0; color: var(--muted); font-size: 14.5px; }
+    form { width: 100%; display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
+    input { width: 100%; height: 48px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 16px; outline: none; }
+    input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+    button { height: 48px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; font-size: 16px; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: .6; }
+    #err { color: var(--danger); font-size: 14px; min-height: 20px; }
+  </style>
+</head>
+<body>
+  <main>
+    <img src="/icon-192.png" alt="">
+    <h1>Roundtable</h1>
+    <p>Sign in with the password you set in Roundtable on your computer (Settings → Phone).</p>
+    <form id="f">
+      <input id="pw" type="password" placeholder="Password" autocomplete="current-password" autofocus required>
+      <button id="go" type="submit">Sign in</button>
+      <div id="err" role="alert"></div>
+    </form>
+  </main>
+  <script>
+    document.getElementById('f').addEventListener('submit', async e => {
+      e.preventDefault();
+      const go = document.getElementById('go'), err = document.getElementById('err');
+      go.disabled = true; err.textContent = '';
+      try {
+        const r = await fetch('/api/remote/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: document.getElementById('pw').value }) });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || 'Couldn’t sign in');
+        location.replace('/');
+      } catch (x) { err.textContent = x.message; go.disabled = false; }
+    });
+  </script>
+</body>
+</html>

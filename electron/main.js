@@ -1,6 +1,6 @@
 'use strict';
 /* Desktop wrapper: runs the local server in-process and shows it in a native window. */
-const { app, BrowserWindow, shell, Menu, nativeTheme, dialog, ipcMain, session } = require('electron');
+const { app, BrowserWindow, shell, Menu, nativeTheme, dialog, ipcMain, session, Tray, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -269,6 +269,23 @@ if (!app.requestSingleInstanceLock()) {
     app.on('activate', () => { if (!wins.size) createWindow(); });
   });
 
-  app.on('window-all-closed', () => { if (!IS_MAC) app.quit(); });
+  // With phone access on, closing the windows leaves Roundtable running in the tray so phones can still reach it
+  let tray = null;
+  const showTray = () => {
+    if (tray) return;
+    const img = nativeImage.createFromPath(path.join(__dirname, '..', 'build', 'icon.png')).resize({ width: 16, height: 16 });
+    tray = new Tray(img);
+    tray.setToolTip('Roundtable — phone access is on');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Open Roundtable', click: () => createWindow('#/') },
+      { type: 'separator' },
+      { label: 'Quit Roundtable', click: () => { tray.destroy(); tray = null; app.quit(); } },
+    ]));
+    tray.on('click', () => createWindow('#/'));
+  };
+  app.on('window-all-closed', () => {
+    if (serverMod && serverMod.isRemoteEnabled()) return showTray();
+    if (!IS_MAC) app.quit();
+  });
   app.on('before-quit', () => { if (serverMod) serverMod.stopAll(); });
 }

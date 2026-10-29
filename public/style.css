@@ -706,3 +706,14 @@ select.input { appearance: none; -webkit-appearance: none; cursor: pointer; }
 #main.empty .usage-bar { margin-top: 18px; }
 #main:not(.empty) .usage-bar + .disclaimer { padding-top: 4px; }
 @media (max-width: 520px) { .ub-label { display: none; } .usage-bar { gap: 10px; } }
+.ph-url { display: block; margin-top: 6px; font: 14px var(--mono); color: var(--text); user-select: all; }
+#phonePane { display: flex; flex-direction: column; gap: 14px; }
+/* phones: room for the notch and home bar when added to the home screen */
+@supports (padding: env(safe-area-inset-bottom)) {
+  @media (max-width: 820px) {
+    #dock { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+    #topbar { padding-top: env(safe-area-inset-top); height: calc(56px + env(safe-area-inset-top)); }
+    .sb-head { margin-top: env(safe-area-inset-top); }
+    .sb-foot { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+  }
+}

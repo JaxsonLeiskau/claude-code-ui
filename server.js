@@ -776,7 +776,7 @@ async function startAppRun({ chat, prompt, attachments = [] }) {
 }
 
 /* ---------------- http ---------------- */
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
+const MIME = { '.webmanifest': 'application/manifest+json', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
 
 function send(res, status, body) {
   const data = JSON.stringify(body);
@@ -902,6 +902,12 @@ async function route(req, res) {
     return fs.createReadStream(fp).pipe(res);
   }
 
+  if (p === '/api/remote' && m === 'GET') return send(res, 200, remote.status());
+  if (p === '/api/remote' && m === 'POST') {
+    try { return send(res, 200, await remote.configure(await readBody(req))); }
+    catch (e) { return send(res, 400, { error: e.message }); }
+  }
+
   if (p === '/api/usage' && m === 'GET') {
     const now = Date.now();
     const limits = {};
@@ -929,7 +935,8 @@ async function route(req, res) {
   }
 
   if (p === '/api/app' && m === 'GET') {
-    return send(res, 200, { desktop: !!appHooks.desktop, version: appHooks.version || null, update: appHooks.getUpdate ? appHooks.getUpdate() : null });
+    // on a phone, updating (which restarts the computer's app) stays a job for the computer itself
+    return send(res, 200, { desktop: !!appHooks.desktop && !req.remote, remote: !!req.remote, version: appHooks.version || null, update: appHooks.getUpdate && !req.remote ? appHooks.getUpdate() : null });
   }
   if (p === '/api/app/install-update' && m === 'POST') {
     if (!appHooks.installUpdate) return send(res, 400, { error: 'Updates are only available in the desktop app' });
@@ -1237,6 +1244,9 @@ async function route(req, res) {
 
   // static files
   if (m !== 'GET' && m !== 'HEAD') return send(res, 405, { error: 'Method not allowed' });
+  return serveStatic(p, res);
+}
+function serveStatic(p, res) {
   const rel = p === '/' ? 'index.html' : decodeURIComponent(p).replace(/^\/+/, '');
   const fp = path.resolve(PUBLIC_DIR, rel);
   if (!fp.startsWith(PUBLIC_DIR + path.sep)) return send(res, 403, { error: 'Forbidden' });
@@ -1290,7 +1300,10 @@ let appHooks = {};
 /** Used by the desktop app to report its version and update status. */
 function setAppHooks(h) { appHooks = h || {}; }
 
-module.exports = { start, stopAll, setAppHooks, _internal: { buildContext, getProject, listSessions, store, translateHome } };
+const remote = require('./remote');
+remote.init({ APP_DIR, PUBLIC_DIR, route, send, serveStatic });
+
+module.exports = { isRemoteEnabled: () => remote.isEnabled(), start, stopAll, setAppHooks, _internal: { buildContext, getProject, listSessions, store, translateHome } };
 
 // Run directly (`node server.js`): serve and open the default browser.
 if (require.main === module) {
