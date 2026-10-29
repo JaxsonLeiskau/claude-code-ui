@@ -122,6 +122,16 @@ async function rawHttpError(res) {
   return new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
 }
 
+// Addresses that only exist on the home network (they can't be reached from anywhere else)
+function homeOnly(url) {
+  let h; try { h = new URL(url).hostname.toLowerCase(); } catch { return false; }
+  return /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h) || /\.(local|lan|home|internal)$/.test(h);
+}
+const unreachable = (what, url, e) => new Error(`Couldn't reach ${what} (${e.cause ? e.cause.code || e.cause.message : e.message})` +
+  (homeOnly(url) ? `
+
+${new URL(url).host} only works on your home network. To use it from anywhere, use the Tailscale address of the computer running Open WebUI instead (like http://100.x.x.x:3000 or http://its-name:3000) in Settings → AI models.` : ''));
+
 /** List models for a provider. `override` lets the settings page test unsaved values. */
 async function listModels(id, override = {}) {
   const p = PROVIDERS[id];
@@ -131,7 +141,7 @@ async function listModels(id, override = {}) {
   if (!base) throw new Error('Enter the Open WebUI address first');
   if (id !== 'openwebui' && !key) throw new Error('Enter an API key first');
   const res = await fetch(base + p.models, { headers: key ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(15000) })
-    .catch(e => { throw new Error(`Couldn't reach ${base} (${e.cause ? e.cause.code || e.cause.message : e.message})`); });
+    .catch(e => { throw unreachable(base, base, e); });
   if (!res.ok) {
     // DeepSeek's documented models, in case its list endpoint isn't available
     if (id === 'deepseek' && res.status === 404) return { models: [{ id: 'deepseek-v4-pro', name: '' }, { id: 'deepseek-flash', name: '' }], suggested: 'deepseek-v4-pro' };
@@ -171,7 +181,7 @@ async function streamCompletion(id, messages, { onText, signal } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (c.key) headers.Authorization = `Bearer ${c.key}`;
   const res = await fetch(p.base() + p.chat, { method: 'POST', headers, body: JSON.stringify({ model: c.model, messages, stream: true }), signal })
-    .catch(e => { if (e.name === 'AbortError') throw e; throw new Error(`Couldn't reach ${providerName(id)} (${e.cause ? e.cause.code || e.cause.message : e.message})`); });
+    .catch(e => { if (e.name === 'AbortError') throw e; throw unreachable(providerName(id), p.base(), e); });
   if (!res.ok) throw await httpError(res);
   let text = '';
   if (!(res.headers.get('content-type') || '').includes('event-stream')) {
@@ -344,4 +354,5 @@ function pickModerator(ids) {
   return ids.includes(m) ? m : ids[0];
 }
 
-module.exports = { autoTitlesOn: () => cfg.autoTitles !== false, init, publicConfig, updateConfig, listModels, complete, runDebate, providerName, configured, isDebateEnabled: () => !!cfg.debateEnabled };
+module.exports = {
+  _homeOnly: homeOnly, autoTitlesOn: () => cfg.autoTitles !== false, init, publicConfig, updateConfig, listModels, complete, runDebate, providerName, configured, isDebateEnabled: () => !!cfg.debateEnabled };

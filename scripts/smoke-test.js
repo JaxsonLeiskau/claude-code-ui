@@ -123,6 +123,8 @@ const { start } = require('../server.js');
   const { _test: rt } = require('../remote.js');
   assert.ok(rt.isTailscale('100.101.5.9') && rt.isTailscale('::ffff:100.64.0.1') && rt.isTailscale('fd7a:115c:a1e0::1'), 'accepts Tailscale addresses');
   assert.ok(!rt.isTailscale('100.128.0.1') && !rt.isTailscale('192.168.1.5') && !rt.isTailscale('8.8.8.8'), 'refuses other addresses');
+  assert.ok(['100.101.5.9:3500', 'my-pc:3500', 'my-pc.tail1234.ts.net:3500', '127.0.0.1:3500'].every(rt.hostOk), 'accepts Tailscale names');
+  assert.ok(!['evil.example:3500', 'evil.example.com', ''].some(rt.hostOk), 'refuses other website names (DNS rebinding)');
   const rpost = b => fetch(base + '/api/remote', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json());
   assert.ok(/password first/i.test((await rpost({ enabled: true })).error), 'needs a password before turning on');
   assert.ok(/8 characters/.test((await rpost({ password: 'short' })).error), 'refuses short passwords');
@@ -147,6 +149,16 @@ const { start } = require('../server.js');
 
   const page = await fetch(base + '/');
   assert.ok((await page.text()).includes('id="composer"'), 'serves the UI');
+  assert.ok(/script-src 'self'/.test(page.headers.get('content-security-policy') || ''), 'the UI only runs its own scripts');
+
+  const { _homeOnly } = require('../ai.js');
+  assert.ok(['http://192.168.1.20:3000', 'http://localhost:3000', 'http://homelab.local:3000'].every(_homeOnly) && !['http://100.64.1.2:3000', 'http://homelab:3000', 'https://api.openai.com/v1'].some(_homeOnly), 'spots home-network-only addresses');
+
+  // Markdown from AIs can't break out of a link and run code
+  global.window = {}; require('../public/md.js');
+  const md = window.renderMarkdown('[a](http://x/(http://y/autofocus/onfocus=alert/x//) and https://a.b/c_d_e **[b](https://c.d)**');
+  assert.ok(!/<a[^>]*\sonfocus/.test(md) && (md.match(/<a /g) || []).length === 3, 'links stay links: ' + md);
+  assert.ok(md.includes('href="https://a.b/c_d_e"'), 'underscores in web addresses stay as they are');
 
   console.log('✓ all smoke tests passed');
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} // Windows may still hold the folder briefly

@@ -45,7 +45,8 @@
       const go = document.getElementById('go'), err = document.getElementById('err');
       go.disabled = true; err.textContent = '';
       try {
-        const r = await fetch('/api/remote/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: document.getElementById('pw').value }) });
+        const r = await fetch('/api/remote/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: document.getElementById('pw').value }) })
+          .catch(() => { throw new Error('Can’t reach your computer. Check that Tailscale is on, on this phone, and that Roundtable is open on the computer.'); });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(j.error || 'Couldn’t sign in');
         location.replace('/');

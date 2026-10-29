@@ -2,20 +2,26 @@
 (function () {
   const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+  const emph = s => s
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^\w])__([^_]+)__(?!\w)/g, '$1<strong>$2</strong>')
+    .replace(/(^|[^*\w])\*([^*\s](?:[^*]*[^*\s])?)\*(?!\w)/g, '$1<em>$2</em>')
+    .replace(/(^|[^\w])_([^_\s](?:[^_]*[^_\s])?)_(?!\w)/g, '$1<em>$2</em>')
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>');
+
   function inline(s) {
-    const codes = [];
-    s = s.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
-    s = esc(s);
-    s = s
-      .replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-      .replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-      .replace(/(^|[\s(])(https?:\/\/[^\s<]+[^\s<.,;:!?)'"])/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/(^|[^\w])__([^_]+)__(?!\w)/g, '$1<strong>$2</strong>')
-      .replace(/(^|[^*\w])\*([^*\s](?:[^*]*[^*\s])?)\*(?!\w)/g, '$1<em>$2</em>')
-      .replace(/(^|[^\w])_([^_\s](?:[^_]*[^_\s])?)_(?!\w)/g, '$1<em>$2</em>')
-      .replace(/~~([^~]+)~~/g, '<del>$1</del>');
-    return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${esc(codes[+i])}</code>`);
+    // finished pieces (code, links) are set aside as \0n\0 so later rules can't reach inside them
+    const kept = [];
+    const keep = html => `\u0000${kept.push(html) - 1}\u0000`;
+    const link = (href, text) => keep(`<a href="${href}" target="_blank" rel="noopener">${text}</a>`);
+    s = s.replace(/\u0000/g, '').replace(/`([^`\n]+)`/g, (_, c) => keep(`<code>${esc(c)}</code>`));
+    s = esc(s)
+      .replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)\u0000]+)\)/g, (_, t, u) => link(u, emph(t)))
+      .replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)\u0000]+)\)/g, (_, t, u) => link(u, emph(t)))
+      .replace(/(^|[\s(])(https?:\/\/[^\s<\u0000]+[^\s<\u0000.,;:!?)'"])/g, (_, pre, u) => pre + link(u, u));
+    s = emph(s);
+    while (/\u0000\d+\u0000/.test(s)) s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => kept[+i]);
+    return s;
   }
 
   const LIST = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;

@@ -265,7 +265,9 @@ async function loadTurns(file, limitBytes) {
 // On Windows `claude` is usually a .cmd shim, which Node can only start through cmd.exe.
 // cmd.exe doesn't quote arguments for us, so paths with spaces need quoting by hand.
 const winQuote = a => (a === '' || /[\s&|<>^()"%!]/.test(a) ? `"${String(a).replace(/"/g, '""')}"` : a);
+// Quotes can't stop cmd.exe expanding %VARS% or ending the command at a line break, so those never get that far.
 function spawnClaude(args, opts) {
+  if (IS_WIN && args.some(a => /[%\r\n]/.test(String(a)))) throw new Error('Can\'t start Claude Code with % or a line break in its settings.');
   if (IS_WIN) return spawn(winQuote(CLAUDE_BIN), args.map(winQuote), { ...opts, shell: true, windowsHide: true });
   return spawn(CLAUDE_BIN, args, opts);
 }
@@ -1246,13 +1248,17 @@ async function route(req, res) {
   if (m !== 'GET' && m !== 'HEAD') return send(res, 405, { error: 'Method not allowed' });
   return serveStatic(p, res);
 }
+const APP_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 function serveStatic(p, res) {
   const rel = p === '/' ? 'index.html' : decodeURIComponent(p).replace(/^\/+/, '');
   const fp = path.resolve(PUBLIC_DIR, rel);
   if (!fp.startsWith(PUBLIC_DIR + path.sep)) return send(res, 403, { error: 'Forbidden' });
   fs.readFile(fp, (err, data) => {
     if (err) { res.writeHead(404); return res.end('Not found'); }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(fp)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+    const headers = { 'Content-Type': MIME[path.extname(fp)] || 'application/octet-stream', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' };
+    // the app page shows text from AIs and other devices: only its own script files may ever run
+    if (rel === 'index.html') Object.assign(headers, { 'Content-Security-Policy': APP_CSP, 'X-Frame-Options': 'DENY' });
+    res.writeHead(200, headers);
     res.end(data);
   });
 }

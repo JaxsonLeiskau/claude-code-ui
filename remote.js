@@ -39,6 +39,12 @@ function isTailscale(ip) {
   return /^fd7a:115c:a1e0:/i.test(ip);
 }
 const isLoopback = ip => /^(127\.|::1$|::ffff:127\.)/.test(String(ip || ''));
+// The address the phone typed: a Tailscale IP, a one-word machine name or a *.ts.net name. Anything else
+// (a public website's name pointed at this computer, "DNS rebinding") is refused.
+function hostOk(host) {
+  const n = String(host || '').toLowerCase().replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+  return isTailscale(n) || isLoopback(n) || n === 'localhost' || /^[a-z0-9-]+$/.test(n) || /^[a-z0-9.-]+\.ts\.net$/.test(n);
+}
 function addresses() {
   const out = [];
   for (const list of Object.values(os.networkInterfaces())) for (const a of list || []) if (a.family === 'IPv4' && isTailscale(a.address)) out.push(a.address);
@@ -94,6 +100,7 @@ async function handle(req, res) {
   const ip = req.socket.remoteAddress;
   if (!isTailscale(ip) && !isLoopback(ip)) { res.writeHead(403); return res.end('Roundtable only answers over Tailscale.'); }
   const host = String(req.headers.host || '').toLowerCase();
+  if (!hostOk(host)) { res.writeHead(403); return res.end('Forbidden'); }
   const origin = req.headers.origin;
   if (origin && origin.toLowerCase() !== `http://${host}`) { res.writeHead(403); return res.end('Forbidden'); }
   const url = new URL(req.url, 'http://x');
@@ -159,4 +166,4 @@ function stopListening() {
   return new Promise(resolve => { if (!srv) return resolve(); srv.close(() => resolve()); srv.closeAllConnections && srv.closeAllConnections(); srv = null; state = { running: false, error: null }; });
 }
 
-module.exports = { init, status, configure, isEnabled: () => !!(cfg.enabled && cfg.hash), _test: { isTailscale, handle } };
+module.exports = { init, status, configure, isEnabled: () => !!(cfg.enabled && cfg.hash), _test: { isTailscale, hostOk, handle } };

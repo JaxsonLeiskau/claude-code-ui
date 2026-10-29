@@ -72,7 +72,7 @@ const saveSettings = () => store.set('settings', S.settings);
 async function api(url, opts = {}) {
   const init = { method: opts.method || 'GET', headers: {} };
   if (opts.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
-  const r = await fetch(url, init);
+  const r = await fetch(url, init).catch(() => { throw new Error('Can’t reach Roundtable on your computer. Check your connection (on a phone: that Tailscale is on).'); });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error(j.error || r.statusText), { code: j.code, cwd: j.cwd });
   return j;
@@ -1534,6 +1534,7 @@ async function renderPhonePane(pane) {
   try { st = await api('/api/remote'); } catch (e) { pane.innerHTML = `<p class="hint">${esc(e.message)}</p>`; return; }
   const on = st.enabled && st.running;
   pane.innerHTML = `
+    ${st.ips.length ? '' : '<p class="hint"><strong>Tailscale isn’t running on this computer.</strong> Your phone can only reach Roundtable through Tailscale. Install it from tailscale.com/download on this computer and on your phone, sign in to both with the same account, then reopen this tab.</p>'}
     <label class="switch-row"><span><strong>Phone access</strong><small>Use Roundtable from your phone or another device over Tailscale — everything runs here on this computer, which needs to stay on with Roundtable open.</small></span><input type="checkbox" class="switch" id="phOn" ${st.enabled ? 'checked' : ''}></label>
     <label class="field"><span>${st.hasPassword ? 'Change password' : 'Password'}</span><input class="input" type="password" id="phPw" autocomplete="new-password" placeholder="${st.hasPassword ? 'Leave empty to keep the current one' : 'At least 8 characters'}"><small>Your phone asks for this once, then stays signed in.</small></label>
     <div class="row-end"><span class="sy-msg" id="phMsg">${st.error ? esc(st.error) : ''}</span><button class="btn primary" id="phSave" type="button">Save</button></div>
