@@ -28,7 +28,7 @@ All your Claude Code sessions in a sidebar, claude.ai-style Projects with shared
 - **Search** across chat titles and the full text of every message (`Ctrl/⌘+K`).
 - **Live streaming** replies with readable tool cards: shell commands with output, file edits as red/green diffs, to-do lists, sub-agents, web fetches.
 - **Permissions without the guesswork** — pick *Ask first*, *Accept edits*, *Plan mode* or *Bypass*. If Claude gets blocked on a tool, one click allows it and continues.
-- **Import from claude.ai** — bring your claude.ai chats and projects over from claude.ai's data export (Settings → Import). Projects keep their instructions, knowledge documents and memory, and you can keep chatting in any imported chat.
+- **Import from claude.ai** — bring your claude.ai chats and projects over from claude.ai's data export (Settings → Import). In the desktop app, just choose the list of download links from the export email; Roundtable downloads the parts itself after you sign in to claude.ai once. Projects keep their instructions, knowledge documents and memory, and you can keep chatting in any imported chat.
 - **Code projects and chat projects** — code projects give Claude Code a folder to work in; chat projects work like claude.ai projects (instructions, knowledge, memory) with plain Claude chats or your other AIs, no folder needed.
 - **Plain Claude chats** — pick *Claude* in the message box for a normal conversation, like claude.ai: no tools, no file changes, on your Claude plan.
 - **Usage bar** — how much of your plan's 5-hour and weekly limits you've used, and when they reset, under the message box.

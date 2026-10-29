@@ -1,6 +1,6 @@
 'use strict';
 /* Desktop wrapper: runs the local server in-process and shows it in a native window. */
-const { app, BrowserWindow, shell, Menu, nativeTheme, dialog } = require('electron');
+const { app, BrowserWindow, shell, Menu, nativeTheme, dialog, ipcMain, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -64,7 +64,7 @@ function createWindow(url) {
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     // On macOS the traffic lights sit on top of the sidebar, like claude.ai's desktop app
     ...(IS_MAC ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 19 } } : {}),
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: true },
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: true, preload: path.join(__dirname, 'preload.js') },
   });
   if (st.maximized && !prev) win.maximize();
   wins.add(win);
@@ -89,6 +89,75 @@ function createWindow(url) {
   win.on('closed', () => { wins.delete(win); });
   return win;
 }
+
+// ---------------- importing a claude.ai export straight from its download links ----------------
+// The links in claude.ai's export list only work while signed in to claude.ai, so downloads use a
+// separate browser session that you sign in to once in a small claude.ai window.
+const CLAUDE_PARTITION = 'persist:claude-export';
+const EXPORT_URL_RE = /^https:\/\/claude\.ai\/export\/[\w-]+\/download\/[\w-]+$/;
+const isZip = buf => buf.length > 4 && buf[0] === 0x50 && buf[1] === 0x4b;
+
+async function claudeSignedIn(ses) {
+  const cookies = await ses.cookies.get({ url: 'https://claude.ai' }).catch(() => []);
+  return cookies.some(c => c.name === 'sessionKey' && c.value);
+}
+function claudeSignIn(parent) {
+  return new Promise((resolve, reject) => {
+    const ses = session.fromPartition(CLAUDE_PARTITION);
+    const w = new BrowserWindow({
+      parent, width: 520, height: 760, title: 'Sign in to claude.ai', autoHideMenuBar: true,
+      webPreferences: { partition: CLAUDE_PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    let done = false;
+    const finish = ok => { if (done) return; done = true; clearInterval(t); if (!w.isDestroyed()) w.close(); ok ? resolve() : reject(new Error('Sign-in was closed before it finished.')); };
+    const t = setInterval(async () => { if (await claudeSignedIn(ses)) finish(true); }, 1000);
+    // after signing in, claude.ai moves on from the login pages
+    w.webContents.on('did-navigate', (_, url) => { if (/^https:\/\/claude\.ai\/(new|recents|chat|project)/.test(url)) setTimeout(() => finish(true), 800); });
+    w.webContents.setWindowOpenHandler(({ url }) => (/^https:\/\/(accounts\.google\.com|appleid\.apple\.com|claude\.ai)\//.test(url) ? { action: 'allow' } : (shell.openExternal(url), { action: 'deny' })));
+    w.on('closed', () => finish(false));
+    w.loadURL('https://claude.ai/login');
+  });
+}
+async function downloadPart(ses, url) {
+  const r = await ses.fetch(url, { redirect: 'follow' });
+  const buf = Buffer.from(await r.arrayBuffer());
+  return { ok: r.ok && isZip(buf), status: r.status, buf };
+}
+ipcMain.handle('claude-export', async (event, files) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!baseUrl || !event.senderFrame || !event.senderFrame.url.startsWith(baseUrl)) throw new Error('Not allowed');
+  // chats, projects and account details; the rest (artifacts, frames, cloud sessions) has nothing to import
+  const wanted = (Array.isArray(files) ? files : []).filter(f => f && EXPORT_URL_RE.test(f.url) && /conversation|project|metadata/i.test(`${f.category} ${f.filename}`))
+    .sort((a, b) => /project/i.test(b.filename) - /project/i.test(a.filename));
+  if (!wanted.length) throw new Error('That list has no chat or project downloads in it.');
+  const ses = session.fromPartition(CLAUDE_PARTITION);
+  const progress = msg => { if (!event.sender.isDestroyed()) event.sender.send('claude-export-progress', msg); };
+  const total = { projects: 0, projectsUpdated: 0, chats: 0, chatsUpdated: 0, documents: 0, alreadyHere: 0, empty: 0, found: { conversations: 0, projects: 0 }, files: [] };
+  let triedSignIn = false;
+  for (const f of wanted) {
+    progress(`Downloading ${f.filename}…`);
+    let part = await downloadPart(ses, f.url);
+    if (!part.ok && !triedSignIn && !(await claudeSignedIn(ses))) {
+      triedSignIn = true;
+      progress('Sign in to claude.ai in the window that opened…');
+      await claudeSignIn(win);
+      progress(`Downloading ${f.filename}…`);
+      part = await downloadPart(ses, f.url);
+    }
+    if (!part.ok) {
+      throw new Error(part.status === 404 || part.status === 410 || part.status === 403
+        ? `The link for ${f.filename} has expired or was already used. Export your data again on claude.ai and choose the new list.`
+        : `Couldn't download ${f.filename} (${part.status}). Export your data again on claude.ai and try the new list.`);
+    }
+    progress(`Importing ${f.filename}…`);
+    const r = await fetch(`${baseUrl}/api/import/claude`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: part.buf });
+    const one = await r.json().catch(() => ({}));
+    if (!r.ok) { if (/No chats or projects found/.test(one.error || '')) continue; throw new Error(one.error || `Couldn't import ${f.filename}`); }
+    for (const k of ['projects', 'projectsUpdated', 'chats', 'chatsUpdated', 'documents', 'alreadyHere', 'empty']) total[k] += one[k] || 0;
+    total.found.conversations += (one.found || {}).conversations || 0; total.found.projects += (one.found || {}).projects || 0;
+  }
+  return total;
+});
 
 // Automatic updates from GitHub Releases. On Windows and Linux the new version downloads in
 // the background and installs on restart (the sidebar shows a "Restart to update" button).

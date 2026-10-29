@@ -605,8 +605,8 @@ function settingsDialog(tab = 'general') {
         <p class="hint">Bring your chats and projects over from claude.ai. Projects come in as <strong>chat projects</strong> with their instructions, knowledge documents and memory; chats come in as Claude chats you can keep going.</p>
         <ol class="steps">
           <li>On <a href="https://claude.ai/settings/data-privacy-controls" target="_blank" rel="noopener">claude.ai</a>, open <strong>Settings → Privacy</strong> and click <strong>Export data</strong>.</li>
-          <li>Open the email from Anthropic and download <strong>conversations-000.zip</strong> and <strong>projects-000.zip</strong> (there may be more parts, like -001). The links work for 24 hours.</li>
-          <li>Choose those files here — you can select them all at once. Importing again later only adds or updates what changed.</li>
+          <li>From the email from Anthropic, download the export. ${window.roundtableApp ? 'If it\'s the small list of download links (a <code>manifest…json</code> file), just choose that here — Roundtable downloads the rest itself, asking you to sign in to claude.ai once.' : 'Download <strong>conversations-000.zip</strong> and <strong>projects-000.zip</strong> (there may be more parts, like -001).'} The links work for 24 hours.</li>
+          <li>Choose the file${window.roundtableApp ? '' : 's'} here. Importing again later only adds or updates what changed.</li>
         </ol>
         <div class="row-end"><span class="sy-msg" id="imMsg"></span><input type="file" id="imFile" accept=".zip,.json" multiple hidden><button class="btn accent" id="imGo" type="button">${I.upload} Choose export files…</button></div>
         <small class="muted-note">The export doesn't include the contents of files you attached in chats, so those show by name only. Text you attached is kept.</small>
@@ -675,8 +675,14 @@ function settingsDialog(tab = 'general') {
       for (const f of picked) {
         msg.textContent = `Importing ${f.name}…`;
         const r = await fetch('/api/import/claude', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f });
-        const one = await r.json();
-        if (!r.ok) {
+        let one = await r.json();
+        if (!r.ok && one.code === 'MANIFEST' && one.files && window.roundtableApp) {
+          // the list of download links: the desktop app fetches and imports the parts itself
+          window.roundtableApp.onImportProgress(t => { msg.textContent = t; });
+          msg.textContent = 'Downloading your export from claude.ai…';
+          try { one = await window.roundtableApp.importClaudeExport(one.files); }
+          catch (err) { throw new Error(String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')); }
+        } else if (!r.ok) {
           // other parts of the export (artifacts, frames…) simply have nothing to import
           if (picked.length > 1 && /No chats or projects found/.test(one.error || '')) { skippedFiles.push(f.name); continue; }
           throw new Error(one.error || 'Import failed');

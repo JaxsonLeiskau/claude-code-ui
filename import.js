@@ -77,7 +77,7 @@ async function importExport(buf, D) {
     if (isManifest(o)) {
       const names = o.data_files.map(f => f.filename).filter(Boolean);
       const err = new Error(`That's the list of download links, not the export itself. Download ${names.filter(n => /conversation|project/i.test(n)).join(' and ') || 'the files'} from the links in the email (or from this list), then choose those .zip files here — you can select them together.`);
-      err.code = 'MANIFEST'; throw err;
+      err.code = 'MANIFEST'; err.files = o.data_files.filter(f => f && /^https:\/\/claude\.ai\/export\//.test(f.export_url || '')).map(f => ({ url: f.export_url, filename: f.filename, category: f.category })); throw err;
     }
     if (isConversation(o)) return conversations.push(o);
     if (isProject(o)) return projects.push(o);

@@ -873,7 +873,7 @@ async function route(req, res) {
       });
       if (sync) sync.soon(3000);
       return send(res, 200, result);
-    } catch (e) { return send(res, 400, { error: e.message }); }
+    } catch (e) { return send(res, 400, { error: e.message, code: e.code, files: e.files }); }
   }
 
   if (p === '/api/uploads' && m === 'POST') {
