@@ -118,10 +118,74 @@ function claudeSignIn(parent) {
     w.loadURL('https://claude.ai/login');
   });
 }
-async function downloadPart(ses, url) {
-  const r = await ses.fetch(url, { redirect: 'follow' });
-  const buf = Buffer.from(await r.arrayBuffer());
-  return { ok: r.ok && isZip(buf), status: r.status, buf };
+const isGzip = buf => buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b;
+const firstChar = buf => buf.subarray(0, 64).toString('utf8').replace(/^﻿/, '').trim()[0];
+// a download we can import: a zip, a gzip'd file, or the JSON itself
+function usable(buf) {
+  if (isGzip(buf)) { try { buf = require('zlib').gunzipSync(buf); } catch { return null; } }
+  if (isZip(buf)) return buf;
+  const c = firstChar(buf);
+  if (c === '[' || c === '{') {
+    try { const o = JSON.parse(buf.toString('utf8')); if (Array.isArray(o) || o.chat_messages || o.uuid || o.conversations || o.projects) return buf; } catch {}
+  }
+  return null;
+}
+// claude.ai sometimes answers with a short JSON note pointing at the real file
+function linkIn(buf) {
+  try {
+    const o = JSON.parse(buf.toString('utf8'));
+    for (const k of ['url', 'download_url', 'signed_url', 'export_url', 'href']) if (typeof o[k] === 'string' && /^https:\/\//.test(o[k])) return o[k];
+  } catch {}
+  return null;
+}
+// last resort: open the link in a hidden claude.ai window and catch the download it starts
+function browserDownload(ses, url, parent) {
+  return new Promise(resolve => {
+    const w = new BrowserWindow({ parent, show: false, webPreferences: { partition: CLAUDE_PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true } });
+    const file = path.join(app.getPath('temp'), `roundtable-export-${process.pid}-${Date.now()}.zip`);
+    let done = false;
+    const finish = res => {
+      if (done) return; done = true; clearTimeout(t); ses.removeListener('will-download', onDl);
+      if (!w.isDestroyed()) w.destroy();
+      resolve(res);
+    };
+    const t = setTimeout(() => finish({ ok: false, status: 'no download started' }), 120000);
+    function onDl(e, item, wc) {
+      if (wc !== w.webContents) return;
+      clearTimeout(t);
+      item.setSavePath(file);
+      item.once('done', (_, state) => {
+        if (state !== 'completed') return finish({ ok: false, status: `download ${state}` });
+        let buf = null;
+        try { buf = usable(fs.readFileSync(file)); } catch {}
+        try { fs.unlinkSync(file); } catch {}
+        finish(buf ? { ok: true, status: 200, buf } : { ok: false, status: 'not an export file' });
+      });
+    }
+    ses.on('will-download', onDl);
+    w.webContents.on('did-navigate', (_, u) => { if (/^https:\/\/claude\.ai\/(login|logout)/.test(u)) finish({ ok: false, status: 401, needsSignIn: true }); });
+    w.loadURL(url).catch(() => {}); // a link that downloads straight away "fails" to load as a page; that's fine
+  });
+}
+async function downloadPart(ses, url, parent) {
+  let r, buf;
+  try {
+    r = await ses.fetch(url, { redirect: 'follow' });
+    buf = Buffer.from(await r.arrayBuffer());
+  } catch (e) { return { ok: false, status: e.message }; }
+  if (!r.ok) return { ok: false, status: r.status, needsSignIn: r.status === 401 };
+  const got = usable(buf);
+  if (got) return { ok: true, status: r.status, buf: got };
+  const link = linkIn(buf);
+  if (link) {
+    try {
+      const r2 = await ses.fetch(link, { redirect: 'follow' });
+      const b2 = usable(Buffer.from(await r2.arrayBuffer()));
+      if (r2.ok && b2) return { ok: true, status: r2.status, buf: b2 };
+    } catch {}
+  }
+  // a web page (or anything else): let claude.ai's own page start the download
+  return browserDownload(ses, url, parent);
 }
 ipcMain.handle('claude-export', async (event, files) => {
   const win = BrowserWindow.fromWebContents(event.sender);
@@ -136,13 +200,13 @@ ipcMain.handle('claude-export', async (event, files) => {
   let triedSignIn = false;
   for (const f of wanted) {
     progress(`Downloading ${f.filename}…`);
-    let part = await downloadPart(ses, f.url);
-    if (!part.ok && !triedSignIn && !(await claudeSignedIn(ses))) {
+    let part = await downloadPart(ses, f.url, win);
+    if (!part.ok && !triedSignIn && (part.needsSignIn || !(await claudeSignedIn(ses)))) {
       triedSignIn = true;
       progress('Sign in to claude.ai in the window that opened…');
       await claudeSignIn(win);
       progress(`Downloading ${f.filename}…`);
-      part = await downloadPart(ses, f.url);
+      part = await downloadPart(ses, f.url, win);
     }
     if (!part.ok) {
       throw new Error(part.status === 404 || part.status === 410 || part.status === 403
