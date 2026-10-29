@@ -652,7 +652,7 @@ async function listAppChats() {
       id: c.id, kind: c.kind, provider: c.provider || null, title: c.title || 'Untitled', pinned: !!c.pinned,
       projectId: c.projectId && store.projects[c.projectId] ? c.projectId : null,
       cwd: null, created: c.created, updated: c.updated, userCount: c.messages.filter(m => m.role === 'user').length,
-      speaker: c.kind === 'model' ? ai.providerName(c.provider) : 'Debate',
+      speaker: c.kind === 'model' ? ai.providerName(c.provider) : 'Debate', imported: !!c.importedFrom,
     });
   }
   return out;

@@ -63,19 +63,23 @@ function messageText(m) {
 
 async function importExport(buf, D) {
   // D: { APP_DIR, UPLOADS_DIR, CHATS_DIR, store, saveProjects, filesDir, memoryFile, loadChat, saveChat }
-  let conversations, projects = null, memories = null;
-  const t = buf.subarray(0, 1).toString();
+  let conversations, projects = null, memories = null, entriesList = null;
+  const t = buf.subarray(0, 3).toString().replace(/^\uFEFF/, '').trim()[0];
   if (t === '[' || t === '{') {
-    conversations = JSON.parse(buf.toString('utf8'));
+    conversations = JSON.parse(buf.toString('utf8').replace(/^\uFEFF/, ''));
   } else {
     const z = readZip(buf);
+    entriesList = [...z.keys()].slice(0, 30);
     conversations = findJson(z, 'conversations.json');
     projects = findJson(z, 'projects.json');
     memories = findJson(z, 'memories.json');
     if (!conversations && !projects) throw new Error('Couldn\'t find conversations.json in that file. Make sure it\'s the export from claude.ai (Settings → Privacy → Export data).');
   }
-  if (conversations && !Array.isArray(conversations)) conversations = conversations.conversations || [];
-  const out = { projects: 0, projectsUpdated: 0, chats: 0, chatsUpdated: 0, skipped: 0, documents: 0 };
+  const files = entriesList || [];
+  if (conversations && !Array.isArray(conversations)) conversations = conversations.conversations || conversations.chats || conversations.data || Object.values(conversations).find(Array.isArray) || [];
+  if (projects && !Array.isArray(projects)) projects = projects.projects || projects.data || Object.values(projects).find(Array.isArray) || [];
+  const out = { projects: 0, projectsUpdated: 0, chats: 0, chatsUpdated: 0, skipped: 0, documents: 0,
+    found: { conversations: (conversations || []).length, projects: (projects || []).length }, alreadyHere: 0, empty: 0, files };
   const now = new Date().toISOString();
 
   // projects → chat projects
@@ -114,17 +118,21 @@ async function importExport(buf, D) {
 
   // conversations → Claude chats
   for (const c of conversations || []) {
-    const msgs = Array.isArray(c && c.chat_messages) ? c.chat_messages : [];
-    if (!c || !c.uuid || !msgs.length) { out.skipped++; continue; }
+    const msgs = Array.isArray(c && c.chat_messages) ? c.chat_messages : Array.isArray(c && c.messages) ? c.messages : [];
+    const cid = c && (c.uuid || c.id);
+    if (!c || !cid || !msgs.length) { out.skipped++; out.empty++; continue; }
+    if (!c.uuid) c.uuid = cid;
     const id = chatIdFor(c.uuid);
     const updated = c.updated_at || c.created_at || now;
     const existing = await D.loadChat(id);
-    if (existing && (existing.updated || '') >= updated) { out.skipped++; continue; } // nothing new (or continued here since)
+    if (existing && (existing.updated || '') >= updated) { out.skipped++; out.alreadyHere++; continue; } // nothing new (or continued here since)
     const messages = [];
     for (const m of msgs) {
+      if (!m) continue;
       const text = messageText(m).trim();
       const ts = m.created_at || updated;
-      if (m.sender === 'human' || m.sender === 'user') {
+      const who = m.sender || m.role || (m.author && m.author.role);
+      if (who === 'human' || who === 'user') {
         const atts = [];
         for (const a of [...(m.attachments || []), ...(m.files || [])]) {
           if (!a) continue;

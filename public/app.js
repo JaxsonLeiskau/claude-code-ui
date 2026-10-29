@@ -180,6 +180,7 @@ function renderSidebar() {
   const q = S.query.trim().toLowerCase();
   const running = new Set(S.runs.map(r => r.sessionId).filter(Boolean));
   let list = S.sessions;
+  if (S.filterImported) list = list.filter(s => s.imported);
   if (q) list = list.filter(s => s.title.toLowerCase().includes(q) || (s.cwd || '').toLowerCase().includes(q) || (S.searchHits && S.searchHits.has(s.id)));
 
   // projects
@@ -204,7 +205,12 @@ function renderSidebar() {
     projList.appendChild(more);
   }
   if (!projects.length) projList.innerHTML = `<div class="sb-empty">Create a project to give Claude shared instructions, files and memory.</div>`;
-  $('#filterBar').hidden = true;
+  const fb = $('#filterBar');
+  fb.hidden = !S.filterImported;
+  if (S.filterImported) {
+    fb.innerHTML = `<div class="filter-chip">${avatar('Claude')}<span class="t">Imported from claude.ai · ${S.sessions.filter(s => s.imported).length}</span><button class="icon-btn tiny" title="Show all chats">${I.x}</button></div>`;
+    fb.querySelector('button').onclick = () => { S.filterImported = false; renderSidebar(); };
+  }
 
   // starred
   const starred = list.filter(s => s.pinned);
@@ -666,12 +672,20 @@ function settingsDialog(tab = 'general') {
       const r = await fetch('/api/import/claude', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || 'Import failed');
-      const parts = [
-        j.projects && `${j.projects} project${j.projects > 1 ? 's' : ''}`, j.chats && `${j.chats} chat${j.chats > 1 ? 's' : ''}`,
-        (j.chatsUpdated + j.projectsUpdated) && `${j.chatsUpdated + j.projectsUpdated} updated`, j.documents && `${j.documents} document${j.documents > 1 ? 's' : ''}`,
-      ].filter(Boolean);
-      msg.className = 'sy-msg ok'; msg.textContent = parts.length ? `Imported ${parts.join(', ')}.` : 'Everything was already up to date.';
+      const n = (x, w) => `${x} ${w}${x === 1 ? '' : 's'}`;
+      const found = j.found || {};
       await refreshSessions();
+      if (!found.conversations && !found.projects) {
+        msg.className = 'sy-msg';
+        msg.innerHTML = `No chats or projects found in that file. ${j.files && j.files.length ? `It contains: <code>${esc(j.files.join(', '))}</code>. ` : ''}Make sure it's the export from claude.ai — and send me this message if it is.`;
+      } else {
+        const parts = [j.chats && `added ${n(j.chats, 'chat')}`, j.projects && `added ${n(j.projects, 'project')}`, (j.chatsUpdated + j.projectsUpdated) && `updated ${j.chatsUpdated + j.projectsUpdated}`].filter(Boolean);
+        msg.className = 'sy-msg ok';
+        msg.innerHTML = `Found ${n(found.conversations, 'chat')} and ${n(found.projects, 'project')} in the file. ${parts.length ? esc(parts.join(', ')) + '.' : 'All of them were already here.'}${j.alreadyHere && parts.length ? ` ${j.alreadyHere} were already here.` : ''}${j.empty ? ` ${n(j.empty, 'empty chat')} skipped.` : ''}
+          ${S.sessions.some(s => s.imported) ? `<button class="pp-link" id="imShow" type="button">Show imported chats</button>` : ''}`;
+        const sb = $('#imShow', m.el);
+        if (sb) sb.onclick = () => { m.close(); S.filterImported = true; renderSidebar(); $('#sbScroll').scrollTop = 0; };
+      }
     } catch (err) { msg.className = 'sy-msg'; msg.textContent = err.message; }
     btn.disabled = false;
   };
