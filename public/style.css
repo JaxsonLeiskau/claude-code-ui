@@ -613,3 +613,67 @@ select.input { appearance: none; -webkit-appearance: none; cursor: pointer; }
 .sm-empty { padding: 10px 12px; color: var(--muted); font-size: 13px; }
 #main.empty .slash-menu { bottom: auto; top: calc(100% + 8px); }
 @media (max-width: 520px) { .sm-tag { display: none; } }
+
+/* ---------------- chat icons ---------------- */
+.sb-chat .ci { flex: none; display: grid; place-items: center; width: 18px; height: 18px; }
+.sb-chat .ci .av { width: 18px; height: 18px; font-size: 9.5px; }
+.av.cc { background: var(--accent); border-radius: 5px; }
+.av.cc svg { width: 11px; height: 11px; color: #fff; stroke-width: 2.2; }
+.pp-chat .t .ci .av { width: 18px; height: 18px; font-size: 9.5px; }
+
+/* ---------------- dropdowns ---------------- */
+.dd-trigger { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.dd-trigger.inline { background: none; padding: 0; }
+.dd-trigger.inline .dd-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px; }
+.dd-trigger.input { width: 100%; height: 38px; padding: 0 10px 0 12px; border-radius: 9px; border: .5px solid var(--border-strong); background: var(--surface); font-size: 14px; justify-content: space-between; transition: border-color .12s, box-shadow .12s; }
+.dd-trigger.input:hover { border-color: var(--muted); }
+.dd-trigger.input.dd-open, .dd-trigger.input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }
+.dd-trigger .dd-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dd-trigger .dd-chev { color: var(--muted); display: grid; transition: transform .18s; }
+.dd-trigger.dd-open .dd-chev, .pill.dd-open > [data-i="chevron"] svg { transform: rotate(180deg); }
+.pill > [data-i="chevron"] svg { transition: transform .18s; }
+.dd-trigger:disabled { cursor: default; }
+.pill.dd-open { background: var(--hover); }
+.dd-pop { position: fixed; z-index: 150; padding: 5px; border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-pop); overflow-y: auto; max-width: min(360px, calc(100vw - 16px));
+  opacity: 0; transform: translateY(-4px) scale(.98); transform-origin: top left; transition: opacity .13s ease, transform .16s cubic-bezier(.2, .8, .2, 1); }
+.dd-pop.up { transform: translateY(4px) scale(.98); transform-origin: bottom left; }
+.dd-pop.show { opacity: 1; transform: none; }
+.dd-group { padding: 8px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.dd-group:first-child { padding-top: 4px; }
+.dd-group + .dd-item { margin-top: 0; }
+.dd-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px 7px 6px; border-radius: 8px; font-size: 13.5px; color: var(--text-2); cursor: pointer; transition: background .08s; white-space: nowrap; }
+.dd-item .dd-check { width: 16px; display: grid; place-items: center; color: var(--accent); flex: none; }
+.dd-item .dd-check svg { width: 14px; height: 14px; stroke-width: 2.4; }
+.dd-item.active { background: var(--hover); color: var(--text); }
+.dd-item.sel { color: var(--text); font-weight: 550; }
+.dd-item.disabled { opacity: .45; cursor: default; }
+.dd-group ~ .dd-group { border-top: .5px solid var(--border); margin-top: 4px; padding-top: 10px; }
+
+/* ---------------- attachments ---------------- */
+.attach-btn { width: 32px; height: 32px; border-radius: 8px; border: .5px solid var(--border-strong); }
+.attach-btn svg { width: 16px; height: 16px; }
+.attach-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: -2px; }
+.att-chip { display: flex; align-items: center; gap: 8px; max-width: 240px; padding: 5px 6px 5px 5px; border-radius: 10px; background: var(--surface-2); border: .5px solid var(--border); position: relative; animation: pop .14s ease-out; }
+.att-chip img { width: 40px; height: 40px; border-radius: 7px; object-fit: cover; flex: none; }
+.att-chip .att-ico { width: 40px; height: 40px; border-radius: 7px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; flex: none; }
+.att-chip .att-ico svg { width: 18px; height: 18px; }
+.att-meta { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.att-name { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-size { font-size: 11.5px; color: var(--muted); }
+.att-chip.uploading { opacity: .7; }
+.att-chip.uploading .att-size { color: var(--accent); }
+.att-chip.error { border-color: var(--danger); }
+.att-x { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); flex: none; }
+.att-x:hover { background: var(--hover); color: var(--text); }
+.att-x svg { width: 12px; height: 12px; }
+.turn.user { flex-direction: column; align-items: flex-end; gap: 6px; }
+.att-list { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: min(85%, 640px); }
+.att-thumb img { display: block; max-width: 220px; max-height: 180px; border-radius: 12px; object-fit: cover; border: .5px solid var(--border); }
+.att-file { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 10px; background: var(--user-bubble); font-size: 13px; color: var(--text-2); max-width: 260px; }
+.att-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-file svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+#dropOverlay { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 70%, transparent); backdrop-filter: blur(2px); pointer-events: none; animation: fade .12s ease-out; }
+#dropOverlay[hidden] { display: none; }
+#dropOverlay > div { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 28px 40px; border: 2px dashed var(--accent); border-radius: 18px; background: var(--surface); color: var(--text); box-shadow: var(--shadow-pop); }
+#dropOverlay svg { width: 28px; height: 28px; color: var(--accent); }
+#dropOverlay small { color: var(--muted); }

@@ -41,16 +41,20 @@ function saveState(win) {
 }
 
 const RELEASES_URL = 'https://github.com/JaxsonLeiskau/roundtable/releases/latest';
-let win = null;
+// Any number of windows can be open, each on its own chat; chats run side by side
+const wins = new Set();
+const current = () => BrowserWindow.getFocusedWindow() || [...wins].pop() || null;
 let serverMod = null;
 let baseUrl = null;
 
-function createWindow() {
+function createWindow(url) {
   const st = loadState();
-  win = new BrowserWindow({
+  const prev = current();
+  const pos = prev && !prev.isMaximized() ? (([x, y]) => ({ x: x + 32, y: y + 32 }))(prev.getPosition()) : { x: st.x, y: st.y };
+  const win = new BrowserWindow({
     width: st.width || 1280,
     height: st.height || 840,
-    x: st.x, y: st.y,
+    ...pos,
     minWidth: 420,
     minHeight: 480,
     title: 'Roundtable',
@@ -62,16 +66,19 @@ function createWindow() {
     ...(IS_MAC ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 19 } } : {}),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: true },
   });
-  if (st.maximized) win.maximize();
+  if (st.maximized && !prev) win.maximize();
+  wins.add(win);
 
-  win.loadURL(`${baseUrl}/?shell=electron&os=${process.platform}`);
+  win.loadURL(url && url.startsWith(baseUrl) ? url : `${baseUrl}/?shell=electron&os=${process.platform}${url && url.startsWith('#') ? url : ''}`);
   // the window title always reads "Roundtable", whatever the page is showing
   win.on('page-title-updated', e => e.preventDefault());
   win.once('ready-to-show', () => win.show());
 
   // Links in Claude's answers open in your normal browser, never inside the app
+  // ...except the app's own pages ("Open in new window"), which open as another app window
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:|^mailto:/.test(url)) shell.openExternal(url);
+    if (url.startsWith(baseUrl)) createWindow(url);
+    else if (/^https?:|^mailto:/.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e, url) => {
@@ -79,7 +86,8 @@ function createWindow() {
   });
 
   for (const ev of ['resize', 'move', 'close']) win.on(ev, () => saveState(win));
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => { wins.delete(win); });
+  return win;
 }
 
 // Automatic updates from GitHub Releases. On Windows and Linux the new version downloads in
@@ -111,18 +119,20 @@ function setupUpdates() {
 }
 
 function buildMenu() {
-  const send = js => win && win.webContents.executeJavaScript(js).catch(() => {});
+  const send = js => { const w = current(); if (w) w.webContents.executeJavaScript(js).catch(() => {}); };
   const template = [
     ...(IS_MAC ? [{ role: 'appMenu' }] : []),
     {
       label: 'File',
       submenu: [
         { label: 'New Chat', accelerator: 'CmdOrCtrl+Shift+O', click: () => send('newChat()') },
+        { label: 'New Window', accelerator: 'CmdOrCtrl+Shift+N', click: () => createWindow('#/') },
         { label: 'Search Chats', accelerator: 'CmdOrCtrl+K', click: () => send('openSearch()') },
         { type: 'separator' },
         { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => send('settingsDialog()') },
         { label: 'Check for Updates…', click: () => {
           if (!app.isPackaged || !updater) return shell.openExternal(RELEASES_URL);
+          const win = current();
           updater.checkForUpdates().then(r => {
             const latest = r && r.updateInfo && r.updateInfo.version;
             if (!latest || latest === app.getVersion()) dialog.showMessageBox(win, { message: 'You\'re up to date', detail: `Roundtable ${app.getVersion()} is the latest version.` });
@@ -165,6 +175,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
+    const win = current();
     if (!win) return createWindow();
     if (win.isMinimized()) win.restore();
     win.focus();
@@ -187,7 +198,7 @@ if (!app.requestSingleInstanceLock()) {
     setupUpdates();
     buildMenu();
     createWindow();
-    app.on('activate', () => { if (!win) createWindow(); });
+    app.on('activate', () => { if (!wins.size) createWindow(); });
   });
 
   app.on('window-all-closed', () => { if (!IS_MAC) app.quit(); });

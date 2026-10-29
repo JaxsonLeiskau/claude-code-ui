@@ -11,7 +11,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccui-int-'));
 const procs = [];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const base = 36000 + Math.floor(Math.random() * 2000);
-const P = { gh: base, gpt: base + 1, gem: base + 2, desk: base + 3, lap: base + 4 };
+const P = { gh: base, gpt: base + 1, gem: base + 2, desk: base + 3, lap: base + 4, ds: base + 5 };
 function start(file, args, env = {}) {
   const p = spawn(process.execPath, [file, ...args], { cwd: root, env: { ...process.env, ...env }, stdio: ['ignore', 'ignore', 'inherit'] });
   procs.push(p); return p;
@@ -25,7 +25,7 @@ function device(name, port) {
   start('server.js', [], {
     HOME: home, USERPROFILE: home, PORT: String(port), NO_OPEN: '1', DEFAULT_CWD: path.join(home, 'work'), CLAUDE_BIN: bin,
     CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CCUI_GITHUB_API: `http://127.0.0.1:${P.gh}`,
-    CCUI_OPENAI_BASE: `http://127.0.0.1:${P.gpt}/v1`, CCUI_GEMINI_BASE: `http://127.0.0.1:${P.gem}/v1beta/openai`,
+    CCUI_OPENAI_BASE: `http://127.0.0.1:${P.gpt}/v1`, CCUI_GEMINI_BASE: `http://127.0.0.1:${P.gem}/v1beta/openai`, CCUI_DEEPSEEK_BASE: `http://127.0.0.1:${P.ds}`,
   });
   const url = `http://localhost:${port}`;
   return {
@@ -42,6 +42,7 @@ function device(name, port) {
   start(path.join(__dirname, 'fake-github.js'), [String(P.gh)]);
   start(path.join(__dirname, 'fake-ai.js'), [String(P.gpt), 'ChatGPT']);
   start(path.join(__dirname, 'fake-ai.js'), [String(P.gem), 'Gemini']);
+  start(path.join(__dirname, 'fake-ai.js'), [String(P.ds), 'DeepSeek']);
   const desk = device('desktop', P.desk), lap = device('laptop', P.lap);
   await sleep(1500);
 
@@ -57,6 +58,18 @@ function device(name, port) {
   const d = await desk.api(`/api/sessions/${deb.sessionId}`);
   const db = d.turns[1].blocks[0];
   assert.deepStrictEqual(db.participants, ['Claude', 'ChatGPT', 'Gemini'], 'debate participants');
+
+  // DeepSeek joins debates once it has a key; pictures go along with the question
+  await desk.api('/api/ai', 'PATCH', { deepseek: { key: 'good-key', model: 'test-model' } });
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  const up = await desk.api('/api/uploads', 'POST', { name: 'shot.png', data: png.toString('base64') });
+  assert.ok(up.image && up.url, 'upload stored as an image');
+  const deb4 = await desk.api('/api/chat', 'POST', { kind: 'debate', prompt: 'Look at this', attachments: [up.id] });
+  await desk.waitIdle();
+  const d4 = await desk.api(`/api/sessions/${deb4.sessionId}`);
+  assert.deepStrictEqual(d4.turns[1].blocks[0].participants, ['Claude', 'ChatGPT', 'Gemini', 'DeepSeek'], 'DeepSeek in the debate');
+  assert.strictEqual(d4.turns[0].attachments[0].name, 'shot.png', 'attachment shown on the message');
+  await desk.api(`/api/sessions/${deb4.sessionId}`, 'DELETE');
   assert.strictEqual(db.rounds.length, 2, 'two rounds');
   assert.strictEqual(d.turns[1].blocks[1].text, 'CONSENSUS: use Tailscale.', 'moderator consensus');
 
@@ -64,6 +77,10 @@ function device(name, port) {
   const cc = await desk.api('/api/chat', 'POST', { prompt: 'Fix the bug', cwd: path.join(desk.home, 'work'), permissionMode: 'bypassPermissions' });
   await desk.waitIdle();
   const ccId = (await desk.api('/api/sessions')).sessions.find(s => s.kind === 'claude').id;
+  // a new chat gets a short automatic title shortly after its first reply
+  let titled = '';
+  for (let i = 0; i < 50 && !titled; i++) { await sleep(100); titled = (await desk.api('/api/sessions')).sessions.find(s => s.id === ccId).title; if (titled === 'Fix the bug') titled = ''; }
+  assert.strictEqual(titled, 'Claude answer', 'automatic title');
 
   // sync: desktop up, laptop down
   await assert.rejects(desk.api('/api/sync/connect', 'POST', { token: 'bad', repo: 'roundtable-sync' }), /token/);

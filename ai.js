@@ -14,9 +14,11 @@ let cfg = {};
 
 const DEFAULTS = {
   debateEnabled: false,
+  autoTitles: true,
   openwebui: { url: '', key: '', model: '', label: 'My model' },
   openai: { key: '', model: '' },
   gemini: { key: '', model: '' },
+  deepseek: { key: '', model: '' },
   debate: { participants: ['claude', 'openai', 'gemini'], rounds: 2, moderator: 'claude', claudeModel: 'sonnet' },
 };
 
@@ -41,6 +43,7 @@ const PROVIDERS = {
   claude: { name: 'Claude', kind: 'cli' },
   openai: { name: 'ChatGPT', base: () => process.env.CCUI_OPENAI_BASE || 'https://api.openai.com/v1', chat: '/chat/completions', models: '/models' },
   gemini: { name: 'Gemini', base: () => process.env.CCUI_GEMINI_BASE || 'https://generativelanguage.googleapis.com/v1beta/openai', chat: '/chat/completions', models: '/models' },
+  deepseek: { name: 'DeepSeek', base: () => process.env.CCUI_DEEPSEEK_BASE || 'https://api.deepseek.com', chat: '/chat/completions', models: '/models' },
   openwebui: { name: 'My model', base: () => String(cfg.openwebui.url || '').replace(/\/+$/, ''), chat: '/api/chat/completions', models: '/api/models' },
 };
 const providerName = id => (id === 'openwebui' ? cfg.openwebui.label || 'My model' : (PROVIDERS[id] || {}).name || id);
@@ -55,20 +58,26 @@ const mask = k => (k ? '••••' + String(k).slice(-4) : '');
 function publicConfig() {
   return {
     debateEnabled: !!cfg.debateEnabled,
+    autoTitles: cfg.autoTitles !== false,
     openwebui: { url: cfg.openwebui.url, model: cfg.openwebui.model, label: cfg.openwebui.label, key: mask(cfg.openwebui.key) },
     openai: { model: cfg.openai.model, key: mask(cfg.openai.key) },
     gemini: { model: cfg.gemini.model, key: mask(cfg.gemini.key) },
+    deepseek: { model: cfg.deepseek.model, key: mask(cfg.deepseek.key) },
     debate: cfg.debate,
-    available: ['openwebui', 'openai', 'gemini'].filter(configured).map(id => ({ id, name: providerName(id), model: cfg[id].model })),
+    available: ['openwebui', 'openai', 'gemini', 'deepseek'].filter(configured).map(id => ({ id, name: providerName(id), model: cfg[id].model })),
     debateParticipants: debateParticipants().map(id => ({ id, name: providerName(id) })),
   };
 }
 
 function updateConfig(body) {
   const keyOk = v => typeof v === 'string' && v && !v.startsWith('••••');
-  for (const id of ['openwebui', 'openai', 'gemini']) {
+  for (const id of ['openwebui', 'openai', 'gemini', 'deepseek']) {
     const b = body[id]; if (!b || typeof b !== 'object') continue;
-    if (keyOk(b.key)) cfg[id].key = b.key.trim();
+    if (keyOk(b.key)) {
+      // DeepSeek joins debates as soon as it has a key
+      if (id === 'deepseek' && !cfg.deepseek.key && !cfg.debate.participants.includes('deepseek')) cfg.debate.participants.push('deepseek');
+      cfg[id].key = b.key.trim();
+    }
     if (b.key === '') cfg[id].key = '';
     if (typeof b.model === 'string') cfg[id].model = b.model.trim().slice(0, 200);
     if (id === 'openwebui') {
@@ -77,11 +86,12 @@ function updateConfig(body) {
     }
   }
   if (typeof body.debateEnabled === 'boolean') cfg.debateEnabled = body.debateEnabled;
+  if (typeof body.autoTitles === 'boolean') cfg.autoTitles = body.autoTitles;
   if (body.debate && typeof body.debate === 'object') {
     const d = body.debate;
-    if (Array.isArray(d.participants)) cfg.debate.participants = d.participants.filter(p => ['claude', 'openai', 'gemini'].includes(p));
+    if (Array.isArray(d.participants)) cfg.debate.participants = d.participants.filter(p => ['claude', 'openai', 'gemini', 'deepseek'].includes(p));
     if (Number.isInteger(d.rounds)) cfg.debate.rounds = Math.min(3, Math.max(1, d.rounds));
-    if (['claude', 'openai', 'gemini'].includes(d.moderator)) cfg.debate.moderator = d.moderator;
+    if (['claude', 'openai', 'gemini', 'deepseek'].includes(d.moderator)) cfg.debate.moderator = d.moderator;
     if (typeof d.claudeModel === 'string' && /^[\w.\-\[\]]{1,60}$/.test(d.claudeModel)) cfg.debate.claudeModel = d.claudeModel;
   }
   save();
@@ -118,7 +128,11 @@ async function listModels(id, override = {}) {
   if (id !== 'openwebui' && !key) throw new Error('Enter an API key first');
   const res = await fetch(base + p.models, { headers: key ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(15000) })
     .catch(e => { throw new Error(`Couldn't reach ${base} (${e.cause ? e.cause.code || e.cause.message : e.message})`); });
-  if (!res.ok) throw await httpError(res);
+  if (!res.ok) {
+    // DeepSeek's documented models, in case its list endpoint isn't available
+    if (id === 'deepseek' && res.status === 404) return { models: [{ id: 'deepseek-v4-pro', name: '' }, { id: 'deepseek-flash', name: '' }], suggested: 'deepseek-v4-pro' };
+    throw await httpError(res);
+  }
   const j = await res.json();
   const list = (j.data || j.models || []).map(m => ({ id: String(m.id || m.name || '').replace(/^models\//, ''), name: m.name && m.name !== m.id ? String(m.name).replace(/^models\//, '') : '' }));
   let models = list.filter(m => m.id);
@@ -142,6 +156,7 @@ function suggest(id, models) {
       .sort((a, b) => ver(b) - ver(a) || /preview/.test(a) - /preview/.test(b))[0];
     return pick('pro') || pick('flash') || ids[0] || '';
   }
+  if (id === 'deepseek') return ids.find(m => /pro/.test(m)) || ids.find(m => !/flash|lite/.test(m)) || ids[0] || '';
   return ids[0] || '';
 }
 
@@ -182,18 +197,21 @@ async function streamCompletion(id, messages, { onText, signal } = {}) {
 }
 
 /** Claude as a plain chat participant, through the Claude Code CLI with all tools off. */
-function claudeCompletion(messages, { onText, signal } = {}) {
+const flat = c => typeof c === 'string' ? c : Array.isArray(c) ? c.filter(p => p.type === 'text').map(p => p.text).join('\n\n') : '';
+function claudeCompletion(messages, { onText, signal, attachments = [] } = {}) {
   return new Promise((resolve, reject) => {
-    const sys = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
-    const convo = messages.filter(m => m.role !== 'system');
+    const sys = messages.filter(m => m.role === 'system').map(m => flat(m.content)).join('\n\n');
+    const convo = messages.filter(m => m.role !== 'system').map(m => ({ ...m, content: flat(m.content) }));
+    if (attachments.length && convo.length) convo[convo.length - 1].content += `\n\n(The user attached: ${attachments.join(', ')}. Open them with the Read tool if they matter.)`;
     const input = (sys ? `<instructions>\n${sys}\n</instructions>\n\n` : '') + (convo.length > 1
       ? convo.slice(0, -1).map(m => `<${m.role}>\n${m.content}\n</${m.role}>`).join('\n\n') + '\n\n' + convo[convo.length - 1].content
       : (convo[0] || {}).content || '');
     const dir = path.join(deps.APP_DIR, 'debate');
     fs.mkdirSync(dir, { recursive: true });
-    const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--no-session-persistence', '--tools', '',
+    const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--no-session-persistence', '--tools', attachments.length ? 'Read' : '',
       '--model', cfg.debate.claudeModel || 'sonnet',
-      '--system-prompt', 'You are Claude, taking part in a text discussion with other AI assistants. Answer directly in Markdown. You have no tools.'];
+      '--system-prompt', attachments.length ? 'You are Claude, taking part in a text discussion with other AI assistants. Answer directly in Markdown. You can only read the attached files.' : 'You are Claude, taking part in a text discussion with other AI assistants. Answer directly in Markdown. You have no tools.'];
+    for (const d of new Set(attachments.map(a => path.dirname(a)))) args.push('--add-dir', d);
     let proc;
     try { proc = deps.spawnClaude(args, { cwd: dir, env: process.env }); } catch (e) { return reject(e); }
     let text = '', buf = '', err = '', final = null, settled = false;
@@ -235,9 +253,14 @@ function complete(id, messages, opts) {
  * history: earlier [{role, content}] turns of this debate chat (questions + consensus answers).
  * emit(state) is called whenever anything changes, with the whole debate state.
  */
-async function runDebate({ question, history, context, emit, signal }) {
+async function runDebate({ question: q, attachments = [], history, context, emit, signal }) {
   const ids = debateParticipants();
-  if (ids.length < 2) throw new Error('Debate needs at least two models. Add a ChatGPT or Gemini key in Settings → AI models.');
+  if (ids.length < 2) throw new Error('Debate needs at least two models. Add a ChatGPT, Gemini or DeepSeek key in Settings → AI models.');
+  // the question may carry images; every round sees them
+  const question = typeof q === 'string' ? q : (q.find(p => p.type === 'text') || {}).text || '';
+  const images = typeof q === 'string' ? [] : q.filter(p => p.type === 'image_url');
+  const withImages = text => images.length ? [{ type: 'text', text }, ...images] : text;
+  const opts = { attachments };
   const rounds = cfg.debate.rounds || 2;
   const names = ids.map(providerName);
   const st = { participants: names, rounds: [], moderator: providerName(pickModerator(ids)), phase: 'answering', consensus: '' };
@@ -256,15 +279,16 @@ async function runDebate({ question, history, context, emit, signal }) {
       const sys = r === 0
         ? `You are ${names[i]}, one of several AI assistants (the others are ${others}) answering the same question independently. Give your best, well-reasoned answer. Be concise.`
         : `You are ${names[i]}, in round ${r + 1} of a discussion with ${others}. Review the other answers critically and honestly: point out mistakes or missing points, say where you agree, and change your mind if they convinced you. Then give your revised answer.`;
-      let user = question;
+      let user = withImages(question);
       if (r > 0) {
         user = `The question was:\n\n${question}\n\nAnswers from the previous round:\n\n` +
           prev.map(e => `### ${e.speaker}\n${e.error ? '(did not answer)' : e.text}`).join('\n\n') +
           `\n\nReply in this format:\n**Review:** a few short bullet points on the other answers.\n**Revised answer:** your best answer now.`;
+        user = withImages(user);
       }
       try {
         await complete(id, [...ctx, { role: 'system', content: sys }, ...history, { role: 'user', content: user }], {
-          signal, onText: (_, full) => { entries[i].text = full; push(); },
+          ...opts, signal, onText: (_, full) => { entries[i].text = full; push(); },
         });
         entries[i].status = 'done';
       } catch (e) {
@@ -283,7 +307,8 @@ async function runDebate({ question, history, context, emit, signal }) {
   const modPrompt = `The user asked:\n\n${question}\n\n${names.join(', ')} discussed it:\n\n${transcript}\n\n` +
     `Write the final answer for the user, based on where the discussion landed. Start directly with the answer (no preamble about the debate). ` +
     `If they still disagree on something that matters, end with a short "**Where they disagreed**" section naming who thought what. Keep it as short as the question allows.`;
-  st.consensus = await complete(mod, [...ctx, { role: 'system', content: 'You are the moderator of a discussion between AI assistants. Combine their final positions into one accurate answer.' }, ...history, { role: 'user', content: modPrompt }], {
+  st.consensus = await complete(mod, [...ctx, { role: 'system', content: 'You are the moderator of a discussion between AI assistants. Combine their final positions into one accurate answer.' }, ...history, { role: 'user', content: withImages(modPrompt) }], {
+    ...opts,
     signal, onText: (_, full) => { st.consensus = full; push(); },
   });
   st.phase = 'done';
@@ -295,4 +320,4 @@ function pickModerator(ids) {
   return ids.includes(m) ? m : ids[0];
 }
 
-module.exports = { init, publicConfig, updateConfig, listModels, complete, runDebate, providerName, configured, isDebateEnabled: () => !!cfg.debateEnabled };
+module.exports = { autoTitlesOn: () => cfg.autoTitles !== false, init, publicConfig, updateConfig, listModels, complete, runDebate, providerName, configured, isDebateEnabled: () => !!cfg.debateEnabled };

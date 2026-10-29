@@ -21,14 +21,17 @@ All your Claude Code sessions in a sidebar, claude.ai-style Projects with shared
 ## Features
 
 - **Sync between computers** — sign in with GitHub on each computer and your chats, projects and memory stay the same everywhere, stored in a private repository in your own account. Start a chat on your desktop and continue it on your laptop.
-- **Other AI models** — chat with your own **Open WebUI** model (e.g. on a home server, reachable from anywhere over Tailscale), **ChatGPT** or **Gemini**, right next to your Claude Code chats.
-- **Debate mode** (optional, off by default) — ask Claude, ChatGPT and Gemini together. They answer separately, review each other's answers, and a moderator writes the consensus, noting anything they still disagree on.
+- **Other AI models** — chat with your own **Open WebUI** model (e.g. on a home server, reachable from anywhere over Tailscale), **ChatGPT**, **Gemini** or **DeepSeek**, right next to your Claude Code chats.
+- **Debate mode** (optional, off by default) — ask Claude, ChatGPT, Gemini and DeepSeek together. They answer separately, review each other's answers, and a moderator writes the consensus, noting anything they still disagree on.
 - **Projects, like on claude.ai** — give a project instructions, reference files and a working folder, and every chat in it shares them. Claude keeps a **shared project memory** (decisions, preferences, key facts) up to date after each chat, and can search the full text of the project's earlier chats when it needs more detail. Every folder you've used Claude Code in shows up as a project automatically.
 - **Your whole history, organized** — reads the transcripts Claude Code already saves in `~/.claude/projects`, so chats you started in the terminal show up too. Grouped into Today / Yesterday / Previous 7 days, with a **Projects** list of every folder you've used, plus **Starred** chats.
 - **Search** across chat titles and the full text of every message (`Ctrl/⌘+K`).
 - **Live streaming** replies with readable tool cards: shell commands with output, file edits as red/green diffs, to-do lists, sub-agents, web fetches.
 - **Permissions without the guesswork** — pick *Ask first*, *Accept edits*, *Plan mode* or *Bypass*. If Claude gets blocked on a tool, one click allows it and continues.
-- **Type `/` for skills and commands** — like in the terminal and IDE: your skills, custom commands, plugin skills, and the built-ins that work here (`/model`, `/config`, `/mcp`…), with descriptions. Arrow keys and Enter or Tab to pick.
+- **Pictures and files** — drag and drop anywhere in the window, paste with Ctrl+V (screenshots too), or use the paperclip. Claude Code opens them itself (images, PDFs, code); other models get images directly and text files inline.
+- **Several windows at once** — File → New Window (Ctrl+Shift+N), or Ctrl-click / middle-click a chat. Each window works on its own chat and they all run at the same time.
+- **Automatic chat titles** — after the first reply, Claude names the chat in a few words, like the Claude apps. Your own renames always win; turn it off in Settings.
+- **Type `/` for skills and commands** — like in the terminal and IDE: your skills, custom commands, plugin skills, and the built-ins that work here (`/model`, `/config`, `/mcp`…), with descriptions. Arrow keys and Enter or Tab to pick; Tab completes the first match even with the menu closed.
 - **Model picker** (Opus / Sonnet / Haiku), **folder picker** for new chats, and a **stop** button (or `Esc`).
 - Keeps working in the background — switch chats while Claude runs; a spinner marks busy chats, and you re-attach to the live output when you come back.
 - Rename, star and delete chats. Deleted transcripts go to `~/.roundtable/trash`, never erased.
@@ -87,6 +90,7 @@ After that it syncs every few minutes and after each reply; there's also **Sync 
 - **Your Open WebUI model:** its address (use the server's Tailscale name or IP so it works away from home, e.g. `http://homelab:3000`) and an API key from Open WebUI's *Settings → Account → API keys*. An admin has to enable API keys first under *Admin settings → Authentication*.
 - **ChatGPT:** an API key from [platform.openai.com/api-keys](https://platform.openai.com/api-keys). Billed per use by OpenAI; a ChatGPT Plus subscription doesn't include API access.
 - **Gemini:** an API key from [Google AI Studio](https://aistudio.google.com/apikey).
+- **DeepSeek:** an API key from [platform.deepseek.com](https://platform.deepseek.com/api_keys). Adding it also adds DeepSeek to debates.
 
 Then pick who answers from the menu in the message box. Keys stay on that computer.
 

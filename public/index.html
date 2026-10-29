@@ -82,9 +82,12 @@
       <button id="jumpBtn" class="jump" title="Scroll to bottom" data-i="arrowDown" hidden></button>
       <form id="composer" autocomplete="off">
         <div id="slashMenu" class="slash-menu" role="listbox" hidden></div>
+        <div id="attachRow" class="attach-row" hidden></div>
         <textarea id="input" rows="1" placeholder="How can I help you today?" spellcheck="true"></textarea>
         <div class="comp-row">
           <div class="comp-left">
+            <button type="button" class="icon-btn attach-btn" id="attachBtn" title="Attach files or pictures (or drop them here, or paste)" data-i="clip"></button>
+            <input type="file" id="attachInput" multiple hidden>
             <button type="button" class="pill" id="folderBtn" title="Working folder"><span data-i="folder"></span><span id="folderLabel">~</span></button>
             <label class="pill select" title="Permission mode">
               <span data-i="shield"></span>
@@ -97,7 +100,7 @@
             </label>
           </div>
           <div class="comp-right">
-            <button type="button" class="pill deb-toggle" id="debateToggle" title="Debate mode: ask Claude, ChatGPT and Gemini together" role="switch" aria-checked="false"><span class="mini-switch"></span><span>Debate</span></button>
+            <button type="button" class="pill deb-toggle" id="debateToggle" title="Debate mode: ask several AIs together" role="switch" aria-checked="false"><span class="mini-switch"></span><span>Debate</span></button>
             <label class="pill select ghost" title="Who answers">
               <span class="mode-ico" id="modeIco"></span>
               <select id="modelSel"></select>
@@ -116,6 +119,7 @@
 <div id="menu" class="menu" hidden></div>
 <div id="modalRoot"></div>
 <div id="toast" role="status"></div>
+<div id="dropOverlay" hidden><div><span data-i="upload"></span><strong>Drop to attach</strong><small>Pictures, PDFs, code, documents</small></div></div>
 
 <script src="md.js"></script>
 <script src="app.js"></script>

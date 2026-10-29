@@ -43,6 +43,7 @@ const I = {
   flask: P('<path d="M9 3h6M10 3v6L4.5 18.5A1.8 1.8 0 0 0 6 21h12a1.8 1.8 0 0 0 1.5-2.5L14 9V3"/><path d="M7 15h10"/>'),
   link: P('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
   up: P('<path d="m6 15 6-6 6 6"/>'),
+  clip: P('<path d="M20.5 11.5 12.4 19.6a5.2 5.2 0 0 1-7.4-7.4l8.5-8.5a3.5 3.5 0 0 1 4.9 4.9l-8.5 8.5a1.7 1.7 0 0 1-2.5-2.5l7.8-7.8"/>'),
   box: P('<path d="M12 3 3.5 7.5 12 12l8.5-4.5z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16.5 8.5 4.5 8.5-4.5"/>'),
   upload: P('<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/>'),
   download: P('<path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/>'),
@@ -161,11 +162,14 @@ function chatItem(s, running) {
   el.className = 'sb-chat' + (S.view && S.view.id === s.id ? ' active' : '');
   el.dataset.id = s.id;
   el.title = `${s.title}\n${homeify(s.cwd)}`;
-  el.innerHTML = `${running ? `<span class="running-dot">${I.spinner}</span>` : ''}<span class="t">${esc(s.title)}</span><span class="proj-tag">${esc(projectName(s.projectId) || s.speaker || baseName(s.cwd))}</span><button class="more" title="More">${I.dots}</button>`;
+  const icon = running ? `<span class="running-dot">${I.spinner}</span>` : chatIcon(s);
+  el.innerHTML = `${icon}<span class="t">${esc(s.title)}</span><span class="proj-tag">${esc(projectName(s.projectId) || s.speaker || baseName(s.cwd))}</span><button class="more" title="More">${I.dots}</button>`;
   el.addEventListener('click', e => {
     if (e.target.closest('.more')) return;
+    if (e.ctrlKey || e.metaKey) return openInNewWindow(`#/c/${s.id}`);
     go(s.id);
   });
+  el.addEventListener('auxclick', e => { if (e.button === 1) { e.preventDefault(); openInNewWindow(`#/c/${s.id}`); } });
   el.querySelector('.more').addEventListener('click', e => { e.stopPropagation(); chatMenu(s, e.currentTarget); });
   el.addEventListener('contextmenu', e => { e.preventDefault(); chatMenu(s, { x: e.clientX, y: e.clientY }); });
   return el;
@@ -227,10 +231,23 @@ function renderSidebar() {
   }
 }
 
+// Another window on this chat; in the desktop app it opens as a new app window, in a browser as a tab
+function openInNewWindow(hash) {
+  window.open(location.origin + location.pathname + location.search + hash, '_blank');
+}
+
+// The little picture beside each chat: who you're talking to
+function chatIcon(s) {
+  if (s.kind === 'debate') return `<span class="ci">${avatar('Debate')}</span>`;
+  if (s.kind === 'model') return `<span class="ci">${avatar(s.speaker || 'Model')}</span>`;
+  return `<span class="ci"><span class="av cc" title="Claude Code">${I.terminal}</span></span>`;
+}
+
 function chatMenu(s, anchor) {
   showMenu(anchor, [
     { icon: 'star', label: s.pinned ? 'Unstar' : 'Star', run: () => setPinned(s.id, !s.pinned) },
     { icon: 'edit', label: 'Rename', run: () => renameDialog(s.id, s.title) },
+    { icon: 'link', label: 'Open in new window', run: () => openInNewWindow(`#/c/${s.id}`) },
     { icon: 'move', label: 'Move to project…', run: () => moveDialog(s) },
     { icon: 'box', label: 'Open project', run: () => goProject(s.projectId) },
     { icon: 'terminal', label: 'Copy resume command', run: () => { copyText(`cd "${s.cwd}" && claude --resume ${s.id}`); toast('Copied resume command'); } },
@@ -272,13 +289,14 @@ function modal({ title, body, foot, wide }) {
   const back = document.createElement('div');
   back.className = 'modal-back';
   back.innerHTML = `<div class="modal ${wide ? 'wide' : ''}" role="dialog" aria-modal="true"><div class="modal-head"><h2>${esc(title)}</h2><button class="icon-btn" data-close title="Close">${I.x}</button></div><div class="modal-body">${body}</div>${foot ? `<div class="modal-foot">${foot}</div>` : ''}</div>`;
-  const close = () => { back.remove(); document.removeEventListener('keydown', onKey, true); };
-  const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  const close = () => { closeDropdown(); back.remove(); document.removeEventListener('keydown', onKey, true); };
+  const onKey = e => { if (e.key === 'Escape') { if (openDD) return; e.stopPropagation(); close(); } };
   document.addEventListener('keydown', onKey, true);
   back.addEventListener('mousedown', e => { if (e.target === back) close(); });
   $$('[data-close]', back).forEach(b => b.addEventListener('click', close));
   $('#modalRoot').appendChild(back);
   applyIcons(back);
+  back.querySelectorAll('select').forEach(enhanceSelect);
   return { el: back, close };
 }
 
@@ -315,7 +333,7 @@ function deleteDialog(id, title) {
 }
 
 /* ---------------- modes: Claude Code, other models, debate ---------------- */
-const AV_COLORS = { Claude: '#c96442', ChatGPT: '#3f8f6b', Gemini: '#4a6fd1', Debate: '#8a6bbf' };
+const AV_COLORS = { Claude: '#c96442', ChatGPT: '#3f8f6b', Gemini: '#4a6fd1', DeepSeek: '#3d5fb0', Debate: '#8a6bbf' };
 function avatar(name) {
   const color = AV_COLORS[name] || '#8a6bbf';
   return `<span class="av" style="background:${color}">${esc((name || '?').trim()[0].toUpperCase())}</span>`;
@@ -329,7 +347,7 @@ function modeLabel(mode) {
   if (mode.startsWith('model:')) {
     const id = mode.slice(6);
     const p = S.ai && (S.ai.available || []).find(x => x.id === id);
-    return p ? p.name : id === 'openwebui' ? 'My model' : id === 'openai' ? 'ChatGPT' : id === 'gemini' ? 'Gemini' : id;
+    return p ? p.name : ({ openwebui: 'My model', openai: 'ChatGPT', gemini: 'Gemini', deepseek: 'DeepSeek' })[id] || id;
   }
   const m = mode.slice(7);
   return m ? `Claude Code · ${m[0].toUpperCase() + m.slice(1)}` : 'Claude Code';
@@ -359,7 +377,7 @@ async function toggleDebate() {
     if (!turnOn) S.ai = await api('/api/ai', { method: 'PATCH', body: { debateEnabled: false } });
   } catch (e) { toast(e.message); return; }
   if (turnOn && (S.ai.debateParticipants || []).length < 2) {
-    toast('Debate needs at least two AIs — add a ChatGPT or Gemini key');
+    toast('Debate needs at least two AIs — add a ChatGPT, Gemini or DeepSeek key');
     S.ai = await api('/api/ai', { method: 'PATCH', body: { debateEnabled: false } }).catch(() => S.ai);
     renderComposerState();
     return settingsDialog('ai');
@@ -425,6 +443,100 @@ function renderDebate(b, t, idx) {
 }
 const debOpen = new Map();
 
+/* ---------------- smooth dropdowns (replace the system's select menus) ---------------- */
+const nativeValue = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+let openDD = null;
+function enhanceSelect(sel) {
+  if (!sel || sel.dataset.enhanced) return;
+  sel.dataset.enhanced = '1';
+  const trig = document.createElement('button');
+  trig.type = 'button';
+  trig.className = 'dd-trigger ' + (sel.classList.contains('input') ? 'input' : 'inline');
+  trig.setAttribute('aria-haspopup', 'listbox');
+  sel.after(trig);
+  sel.hidden = true;
+  const label = () => { const o = sel.options[sel.selectedIndex]; return o ? o.textContent : ''; };
+  const refresh = () => {
+    trig.innerHTML = `<span class="dd-label">${esc(label())}</span>${sel.classList.contains('input') ? `<span class="dd-chev">${I.chevron}</span>` : ''}`;
+    trig.disabled = sel.disabled;
+  };
+  // keep the button in step when code changes the select's value, options or disabled state
+  Object.defineProperty(sel, 'value', { configurable: true, get() { return nativeValue.get.call(this); }, set(v) { nativeValue.set.call(this, v); refresh(); } });
+  new MutationObserver(refresh).observe(sel, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled'] });
+  sel._refresh = refresh;
+  refresh();
+  const opener = sel.closest('.pill') || trig;
+  opener.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); if (!sel.disabled) openDropdown(sel, opener); });
+  trig.addEventListener('keydown', e => { if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key)) { e.preventDefault(); openDropdown(sel, opener); } });
+}
+function openDropdown(sel, anchor) {
+  if (openDD && openDD.sel === sel) return closeDropdown();
+  closeDropdown();
+  const pop = document.createElement('div');
+  pop.className = 'dd-pop';
+  pop.setAttribute('role', 'listbox');
+  const items = [];
+  for (const node of sel.children) {
+    if (node.tagName === 'OPTGROUP') {
+      pop.insertAdjacentHTML('beforeend', `<div class="dd-group">${esc(node.label)}</div>`);
+      for (const o of node.children) items.push(o);
+      for (const o of node.children) pop.appendChild(ddItem(o, sel));
+    } else { items.push(node); pop.appendChild(ddItem(node, sel)); }
+  }
+  document.body.appendChild(pop);
+  const r = anchor.getBoundingClientRect();
+  const w = Math.max(r.width, 200);
+  pop.style.minWidth = w + 'px';
+  const ph = pop.offsetHeight, below = innerHeight - r.bottom - 10, above = r.top - 10;
+  const up = ph > below && above > below;
+  pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 8)) + 'px';
+  if (up) { pop.style.bottom = (innerHeight - r.top + 6) + 'px'; pop.style.maxHeight = above + 'px'; pop.classList.add('up'); }
+  else { pop.style.top = (r.bottom + 6) + 'px'; pop.style.maxHeight = below + 'px'; }
+  let active = Math.max(0, items.findIndex(o => o.value === sel.value));
+  const els = [...pop.querySelectorAll('.dd-item')];
+  const mark = () => { els.forEach((el, i) => el.classList.toggle('active', i === active)); els[active] && els[active].scrollIntoView({ block: 'nearest' }); };
+  mark();
+  const onKey = e => {
+    if (e.key === 'ArrowDown') { active = (active + 1) % els.length; mark(); }
+    else if (e.key === 'ArrowUp') { active = (active - 1 + els.length) % els.length; mark(); }
+    else if (e.key === 'Enter' || e.key === ' ') els[active] && els[active].click();
+    else if (e.key === 'Escape' || e.key === 'Tab') closeDropdown();
+    else return;
+    e.preventDefault(); e.stopPropagation();
+  };
+  els.forEach((el, i) => el.addEventListener('mousemove', () => { if (active !== i) { active = i; mark(); } }));
+  document.addEventListener('keydown', onKey, true);
+  openDD = { sel, pop, anchor, onKey };
+  anchor.classList.add('dd-open');
+  requestAnimationFrame(() => pop.classList.add('show'));
+}
+function ddItem(o, sel) {
+  const el = document.createElement('div');
+  el.className = 'dd-item' + (o.value === sel.value ? ' sel' : '') + (o.disabled ? ' disabled' : '');
+  el.setAttribute('role', 'option');
+  el.innerHTML = `<span class="dd-check">${o.value === sel.value ? I.check : ''}</span><span>${esc(o.textContent)}</span>`;
+  el.addEventListener('click', () => {
+    if (o.disabled) return;
+    const changed = sel.value !== o.value;
+    sel.value = o.value;
+    closeDropdown();
+    if (changed) sel.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  return el;
+}
+function closeDropdown() {
+  if (!openDD) return;
+  const { pop, anchor, onKey } = openDD;
+  document.removeEventListener('keydown', onKey, true);
+  anchor.classList.remove('dd-open');
+  pop.classList.remove('show');
+  setTimeout(() => pop.remove(), 140);
+  openDD = null;
+}
+document.addEventListener('mousedown', e => { if (openDD && !openDD.pop.contains(e.target) && !openDD.anchor.contains(e.target)) closeDropdown(); });
+window.addEventListener('resize', closeDropdown);
+window.addEventListener('blur', closeDropdown);
+
 /* ---------------- settings ---------------- */
 function settingsDialog(tab = 'general') {
   const st = S.settings;
@@ -442,6 +554,7 @@ function settingsDialog(tab = 'general') {
           <div class="input-row"><input class="input mono" id="setCwd" value="${esc(st.cwd)}"><button class="btn" id="setBrowse">Browse</button></div>
         </label>
         <label class="field"><span>Default permissions for Claude Code</span><select class="input" id="setPerm">${$('#permSel').innerHTML}</select></label>
+        <label class="switch-row"><span><strong>Name chats automatically</strong><small>After the first reply, Claude writes a short title for the chat, like the Claude apps do. Renaming a chat yourself always wins.</small></span><input type="checkbox" class="switch" id="setAutoTitle"></label>
         <div class="about">
           ${S.app && S.app.desktop ? `App version: <code>${esc(S.app.version || '')}</code> · updates install automatically<br>` : ''}
           Claude Code CLI: <code>${esc((S.info && S.info.version) || 'not found')}</code><br>
@@ -456,14 +569,15 @@ function settingsDialog(tab = 'general') {
           <label class="field"><span>API key</span><input class="input mono" data-f="key" placeholder="sk-…" autocomplete="off"><small>In Open WebUI: Settings → Account → API keys. An admin has to turn on API keys first (Admin settings → Authentication).</small></label>`)}
         ${providerCard('openai', 'ChatGPT (OpenAI)', `<label class="field"><span>API key</span><input class="input mono" data-f="key" placeholder="sk-…" autocomplete="off"><small>From <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com/api-keys</a>. Billed per use by OpenAI; a ChatGPT Plus subscription doesn't include it.</small></label>`)}
         ${providerCard('gemini', 'Gemini (Google)', `<label class="field"><span>API key</span><input class="input mono" data-f="key" placeholder="AIza…" autocomplete="off"><small>From <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>.</small></label>`)}
+        ${providerCard('deepseek', 'DeepSeek', `<label class="field"><span>API key</span><input class="input mono" data-f="key" placeholder="sk-…" autocomplete="off"><small>From <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener">platform.deepseek.com</a>. Billed per use by DeepSeek.</small></label>`)}
       </div>
       <div class="tab" data-pane="debate">
         <label class="switch-row"><span><strong>Debate mode</strong><small>Ask several AIs at once. They answer separately, review each other's answers, and a moderator writes the agreed answer.</small></span><input type="checkbox" class="switch" id="debOn"></label>
         <div id="debOpts">
-          <div class="field"><span>Who takes part</span><div class="checks" id="debWho"></div><small>ChatGPT and Gemini need their keys in AI models. Claude uses your Claude Code plan.</small></div>
+          <div class="field"><span>Who takes part</span><div class="checks" id="debWho"></div><small>ChatGPT, Gemini and DeepSeek need their keys in AI models. Claude uses your Claude Code plan.</small></div>
           <div class="input-row">
             <label class="field" style="flex:1"><span>Rounds</span><select class="input" id="debRounds"><option value="1">1 · answers only</option><option value="2">2 · answer, then review</option><option value="3">3 · two rounds of review</option></select></label>
-            <label class="field" style="flex:1"><span>Moderator</span><select class="input" id="debMod"><option value="claude">Claude</option><option value="openai">ChatGPT</option><option value="gemini">Gemini</option></select></label>
+            <label class="field" style="flex:1"><span>Moderator</span><select class="input" id="debMod"><option value="claude">Claude</option><option value="openai">ChatGPT</option><option value="gemini">Gemini</option><option value="deepseek">DeepSeek</option></select></label>
             <label class="field" style="flex:1"><span>Claude model</span><select class="input" id="debClaude"><option value="sonnet">Sonnet</option><option value="opus">Opus</option><option value="haiku">Haiku</option></select></label>
           </div>
           <small class="muted-note">Each question goes to every model once per round, plus once to the moderator — so a 3-model, 2-round debate is 7 requests. It uses more of your plan and API credit than a normal message.</small>
@@ -488,8 +602,8 @@ function settingsDialog(tab = 'general') {
   $$('[data-close]', m.el).forEach(b => b.addEventListener('click', () => { S.settings.theme = origTheme; applyTheme(); }));
 
   // AI + debate
-  const a = S.ai || { openwebui: {}, openai: {}, gemini: {}, debate: { participants: [], rounds: 2, moderator: 'claude', claudeModel: 'sonnet' } };
-  for (const id of ['openwebui', 'openai', 'gemini']) {
+  const a = S.ai || { openwebui: {}, openai: {}, gemini: {}, deepseek: {}, debate: { participants: [], rounds: 2, moderator: 'claude', claudeModel: 'sonnet' } };
+  for (const id of ['openwebui', 'openai', 'gemini', 'deepseek']) {
     const card = $(`[data-prov="${id}"]`, m.el);
     $$('[data-f]', card).forEach(i => { i.value = (a[id] && a[id][i.dataset.f]) || ''; });
     const msel = $('[data-f="model"]', card);
@@ -510,8 +624,9 @@ function settingsDialog(tab = 'general') {
     $('[data-clear]', card).onclick = () => { $$('[data-f]', card).forEach(i => { if (i.dataset.f !== 'label') i.value = ''; }); msel.innerHTML = ''; $('.pc-status', card).textContent = 'Will be removed when you save'; };
   }
   $('#debOn', m.el).checked = !!a.debateEnabled;
+  $('#setAutoTitle', m.el).checked = a.autoTitles !== false;
   const who = a.debate.participants || [];
-  $('#debWho', m.el).innerHTML = [['claude', 'Claude'], ['openai', 'ChatGPT'], ['gemini', 'Gemini']].map(([k, l]) => `<label class="check"><input type="checkbox" value="${k}" ${who.includes(k) ? 'checked' : ''}> ${l}</label>`).join('');
+  $('#debWho', m.el).innerHTML = [['claude', 'Claude'], ['openai', 'ChatGPT'], ['gemini', 'Gemini'], ['deepseek', 'DeepSeek']].map(([k, l]) => `<label class="check"><input type="checkbox" value="${k}" ${who.includes(k) ? 'checked' : ''}> ${l}</label>`).join('');
   $('#debRounds', m.el).value = String(a.debate.rounds || 2);
   $('#debMod', m.el).value = a.debate.moderator || 'claude';
   $('#debClaude', m.el).value = a.debate.claudeModel || 'sonnet';
@@ -523,15 +638,15 @@ function settingsDialog(tab = 'general') {
   $('#setSave', m.el).onclick = async () => {
     Object.assign(S.settings, { name: $('#setName', m.el).value.trim(), theme, cwd: $('#setCwd', m.el).value.trim(), perm: $('#setPerm', m.el).value });
     saveSettings();
-    const body = { debateEnabled: $('#debOn', m.el).checked, debate: {
+    const body = { autoTitles: $('#setAutoTitle', m.el).checked, debateEnabled: $('#debOn', m.el).checked, debate: {
       participants: $$('#debWho input:checked', m.el).map(i => i.value), rounds: +$('#debRounds', m.el).value,
       moderator: $('#debMod', m.el).value, claudeModel: $('#debClaude', m.el).value } };
-    for (const id of ['openwebui', 'openai', 'gemini']) {
+    for (const id of ['openwebui', 'openai', 'gemini', 'deepseek']) {
       const card = $(`[data-prov="${id}"]`, m.el); body[id] = {};
       $$('[data-f]', card).forEach(i => { body[id][i.dataset.f] = i.value.trim(); });
     }
     try { S.ai = await api('/api/ai', { method: 'PATCH', body }); } catch (e) { toast(e.message); return; }
-    if (body.debateEnabled && (S.ai.debateParticipants || []).length < 2) toast('Debate needs at least two models with keys — add ChatGPT or Gemini');
+    if (body.debateEnabled && (S.ai.debateParticipants || []).length < 2) toast('Debate needs at least two models with keys — add ChatGPT, Gemini or DeepSeek');
     m.close();
     $('#permSel').value = S.settings.perm;
     updateProfile(); renderComposerState(); $('#greeting').textContent = greeting();
@@ -539,7 +654,7 @@ function settingsDialog(tab = 'general') {
   };
 }
 function providerCard(id, title, fields) {
-  return `<section class="prov" data-prov="${id}"><div class="prov-head">${avatar(id === 'openai' ? 'ChatGPT' : id === 'gemini' ? 'Gemini' : 'My model')}<h3>${esc(title)}</h3><span class="pc-status"></span></div>
+  return `<section class="prov" data-prov="${id}"><div class="prov-head">${avatar(({ openai: 'ChatGPT', gemini: 'Gemini', deepseek: 'DeepSeek' })[id] || 'My model')}<h3>${esc(title)}</h3><span class="pc-status"></span></div>
     ${fields}
     <div class="input-row"><label class="field" style="flex:1"><span>Model</span><select class="input" data-f="model"></select></label>
       <button class="btn" data-load type="button" style="align-self:flex-end">Connect</button><button class="btn" data-clear type="button" style="align-self:flex-end" title="Remove">${I.trash}</button></div></section>`;
@@ -663,6 +778,7 @@ async function attach(runId, token) {
   scheduleRender();
   renderComposerState();
   refreshRuns().then(changed => { if (!changed) refreshSessions(); });
+  setTimeout(refreshSessions, 6000); setTimeout(refreshSessions, 15000); // automatic titles arrive a few seconds later
 }
 
 function liveTurn() {
@@ -685,7 +801,7 @@ function handleEvent(ev) {
   const v = S.view;
   switch (ev.kind) {
     case 'user': {
-      v.turns.push({ role: 'user', text: ev.text });
+      v.turns.push({ role: 'user', text: ev.text, attachments: ev.attachments });
       markDirty(v.turns.length - 1);
       v.live = null;
       liveTurn().startedAt = ev.t;
@@ -824,8 +940,11 @@ function renderTurn(t, idx) {
   el.dataset.idx = idx;
   if (t.role === 'user') {
     const long = (t.text || '').length > 1200 && !t.expanded;
-    el.innerHTML = `<div class="bubble ${long ? 'long' : ''}">${esc(t.text)}${t.images ? `<span class="img-note">📎 ${t.images} image${t.images > 1 ? 's' : ''}</span>` : ''}</div>`;
-    if (long) el.firstChild.onclick = () => { t.expanded = true; el.replaceWith(renderTurn(t, idx)); };
+    const atts = (t.attachments || []).map(a => a.image && a.url
+      ? `<a class="att-thumb" href="${esc(a.url)}" target="_blank" rel="noopener" title="${esc(a.name)}"><img src="${esc(a.url)}" alt="${esc(a.name)}" loading="lazy"></a>`
+      : `<span class="att-file" title="${esc(a.name)}">${I.file}<span>${esc(a.name)}</span></span>`).join('');
+    el.innerHTML = `${atts ? `<div class="att-list">${atts}</div>` : ''}${t.text ? `<div class="bubble ${long ? 'long' : ''}">${esc(t.text)}${t.images ? `<span class="img-note">📎 ${t.images} image${t.images > 1 ? 's' : ''}</span>` : ''}</div>` : ''}`;
+    if (long) el.querySelector('.bubble').onclick = () => { t.expanded = true; el.replaceWith(renderTurn(t, idx)); };
     return el;
   }
   if (t.role === 'notice') {
@@ -1025,7 +1144,7 @@ function renderComposerState() {
   sendBtn.classList.toggle('stop', running);
   sendBtn.innerHTML = running ? I.stop : I.arrowUp;
   sendBtn.title = running ? 'Stop (Esc)' : 'Send (Enter)';
-  sendBtn.disabled = !running && !$('#input').value.trim();
+  sendBtn.disabled = !running && !$('#input').value.trim() && !S.pending.some(a => a.status === 'ready');
   const fb = $('#folderBtn');
   const locked = !!(v && (v.id || v.turns.length || v.mode === 'project'));
   fb.classList.toggle('locked', locked);
@@ -1043,7 +1162,7 @@ function renderComposerState() {
   $('#composer').classList.toggle('nonclaude', !claudeMode);
   const who = claudeMode ? 'Claude' : mode === 'debate' ? 'the panel' : modeLabel(mode);
   $('#input').placeholder = v && v.mode === 'project' ? `Start a chat in ${v.project ? v.project.name : 'this project'}…`
-    : v && v.turns.length ? `Reply to ${who}…` : claudeMode ? 'How can I help you today?' : mode === 'debate' ? 'Ask Claude, ChatGPT and Gemini to debate…' : `Message ${who}…`;
+    : v && v.turns.length ? `Reply to ${who}…` : claudeMode ? 'How can I help you today?' : mode === 'debate' ? `Ask ${((S.ai && S.ai.debateParticipants) || []).map(p => p.name).join(', ').replace(/, ([^,]*)$/, ' and $1') || 'the panel'} to debate…` : `Message ${who}…`;
 }
 
 function updateEmpty() {
@@ -1141,7 +1260,7 @@ function renderProjectPage() {
       <div id="projComposerSlot"></div>
       <div class="pp-chats">
         ${chats.length ? `<div class="pp-chats-head">${chats.length} chat${chats.length > 1 ? 's' : ''}</div>` : ''}
-        ${chats.map(s => `<button class="pp-chat" data-id="${esc(s.id)}"><span class="t">${running.has(s.id) ? `<span class="running-dot">${I.spinner}</span>` : ''}${esc(s.title)}</span><span class="when">Last message ${esc(ago(s.updated))}</span></button>`).join('')
+        ${chats.map(s => `<button class="pp-chat" data-id="${esc(s.id)}"><span class="t">${running.has(s.id) ? `<span class="running-dot">${I.spinner}</span>` : chatIcon(s)}${esc(s.title)}</span><span class="when">Last message ${esc(ago(s.updated))}</span></button>`).join('')
           || `<div class="pp-empty">No chats yet. Every chat you start here shares this project's instructions, files and memory.</div>`}
       </div>
     </div>
@@ -1389,6 +1508,79 @@ function renderSyncPane(pane) {
     S.sync = await api('/api/sync/disconnect', { method: 'POST' }); renderSyncPane(pane); renderSyncBadge();
   };
 }
+/* ---------------- attachments: drop, paste, or the paperclip ---------------- */
+S.pending = [];
+function addFiles(files) {
+  for (const f of files) {
+    if (f.size > 25e6) { toast(`${f.name} is over 25 MB`); continue; }
+    const item = { key: Math.random().toString(36).slice(2), name: f.name || 'pasted-image.png', size: f.size, image: /^image\//.test(f.type), status: 'uploading' };
+    if (item.image) try { item.preview = URL.createObjectURL(f); } catch {}
+    S.pending.push(item);
+    const r = new FileReader();
+    r.onload = async () => {
+      try {
+        const up = await api('/api/uploads', { method: 'POST', body: { name: item.name, data: String(r.result).split(',')[1] || '' } });
+        Object.assign(item, { id: up.id, status: 'ready' });
+      } catch (e) { item.status = 'error'; item.error = e.message; toast(`${item.name}: ${e.message}`); }
+      renderAttachRow(); renderComposerState();
+    };
+    r.onerror = () => { item.status = 'error'; renderAttachRow(); };
+    r.readAsDataURL(f);
+  }
+  renderAttachRow(); renderComposerState(); $('#input').focus();
+}
+function renderAttachRow() {
+  const row = $('#attachRow');
+  row.hidden = !S.pending.length;
+  row.innerHTML = S.pending.map(a => `
+    <div class="att-chip ${a.status}" data-k="${a.key}" title="${esc(a.error || a.name)}">
+      ${a.preview ? `<img src="${a.preview}" alt="">` : `<span class="att-ico">${I.file}</span>`}
+      <span class="att-meta"><span class="att-name">${esc(a.name)}</span><span class="att-size">${a.status === 'uploading' ? 'Adding…' : a.status === 'error' ? 'Couldn’t add' : fmtSize(a.size)}</span></span>
+      <button type="button" class="att-x" title="Remove">${I.x}</button>
+    </div>`).join('');
+  row.querySelectorAll('.att-x').forEach(b => b.onclick = () => {
+    const k = b.closest('.att-chip').dataset.k;
+    S.pending = S.pending.filter(a => a.key !== k);
+    renderAttachRow(); renderComposerState(); $('#input').focus();
+  });
+}
+function bindAttachments() {
+  $('#attachBtn').onclick = () => $('#attachInput').click();
+  $('#attachInput').onchange = e => { const f = [...e.target.files]; e.target.value = ''; if (f.length) addFiles(f); };
+  // Ctrl+V / Cmd+V with a picture or file on the clipboard (screenshots included), from anywhere in the window
+  document.addEventListener('paste', e => {
+    if ($('#modalRoot').children.length) return;
+    const cd = e.clipboardData;
+    if (!cd) return;
+    let files = [...(cd.files || [])];
+    if (!files.length) files = [...(cd.items || [])].filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean);
+    if (!files.length) return;
+    const t = e.target;
+    if (t && t !== $('#input') && /^(INPUT|TEXTAREA)$/.test(t.tagName)) return; // someone else's box
+    e.preventDefault();
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+    addFiles(files.map((f, i) => (!f.name || /^image\.(png|jpe?g|gif|webp)$/i.test(f.name))
+      ? new File([f], `pasted-${stamp}${i ? '-' + i : ''}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type }) : f));
+  });
+  // drag and drop anywhere in the window (project pages keep their own drop-to-add-to-project area)
+  let depth = 0;
+  const hasFiles = e => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+  const overlayFor = e => !(S.view && S.view.mode === 'project' && !(e.target.closest && e.target.closest('#composer')));
+  document.addEventListener('dragenter', e => { if (!hasFiles(e)) return; depth++; if (overlayFor(e)) $('#dropOverlay').hidden = false; });
+  document.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; $('#dropOverlay').hidden = true; } });
+  document.addEventListener('dragover', e => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; $('#dropOverlay').hidden = !overlayFor(e); } });
+  document.addEventListener('drop', e => {
+    depth = 0; $('#dropOverlay').hidden = true;
+    if (!hasFiles(e)) return;
+    e.preventDefault(); // never let the window navigate to a dropped file
+    if (e.defaultPrevented && e.__handledByProject) return;
+    const files = [...e.dataTransfer.files];
+    if (!files.length || e.__handledByProject) return;
+    if (S.view && S.view.runId) { toast('Wait for the reply to finish, then attach'); return; }
+    addFiles(files);
+  });
+}
+
 /* ---------------- "/" menu: skills, commands, plugins ---------------- */
 const slash = { open: false, items: [], sel: 0, cwd: null, list: null, loading: null };
 function slashCwd() {
@@ -1476,7 +1668,10 @@ function slashKey(e) {
 async function send(text) {
   text = (text || '').trim();
   const v = S.view;
-  if (!text || !v || v.runId) return;
+  if (!v || v.runId) return;
+  if (S.pending.some(a => a.status === 'uploading')) { toast('Still adding your files — one moment'); return; }
+  const atts = S.pending.filter(a => a.status === 'ready');
+  if (!text && !atts.length) return;
   const mode = currentMode();
   const isClaude = mode.startsWith('claude:');
   if (isClaude && !v.cwd) { toast('Pick a folder for Claude to work in first'); folderPicker('', p => { v.cwd = p; renderComposerState(); }); return; }
@@ -1490,8 +1685,10 @@ async function send(text) {
         sessionId: v.id, projectId: !v.id && v.mode === 'project' ? v.projectId : undefined, prompt: text, cwd: v.cwd,
         kind: isClaude ? 'claude' : mode === 'debate' ? 'debate' : 'model', provider: mode.startsWith('model:') ? mode.slice(6) : undefined,
         model: isClaude ? mode.slice(7) : undefined, permissionMode: $('#permSel').value, allowedTools: S.allowed[v.id || 'new'] || [],
+        attachments: atts.map(a => a.id),
       },
     });
+    S.pending = S.pending.filter(a => !atts.includes(a)); renderAttachRow();
     if (token !== S.viewToken) return;
     if (r.sessionId && !v.id) {
       v.id = r.sessionId; v.kind = mode === 'debate' ? 'debate' : 'model'; v.provider = mode.startsWith('model:') ? mode.slice(6) : null; v.cwd = null;
@@ -1594,7 +1791,7 @@ function bind() {
     if (e.key === 'Escape') { e.stopPropagation(); closeSearch(); }
     if (e.key === 'Enter') { const first = $('#sbScroll .sb-chat'); if (first) first.click(); }
   });
-  $('#settingsBtn').onclick = settingsDialog;
+  $('#settingsBtn').onclick = () => settingsDialog();
 
   $('#titleBtn').onclick = e => {
     const v = S.view; if (!v || !v.id) return;
@@ -1610,6 +1807,11 @@ function bind() {
   input.addEventListener('blur', () => setTimeout(closeSlash, 120));
   input.addEventListener('keydown', e => {
     if (slashKey(e)) return;
+    if (e.key === 'Tab' && !e.shiftKey && slashQuery() !== null) {
+      e.preventDefault();
+      updateSlash().then(() => { if (slash.items.length) pickSlash(slash.sel || 0); });
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(input.value); }
   });
   $('#composer').addEventListener('submit', e => { e.preventDefault(); if (S.view && S.view.runId) stop(); else send(input.value); });
@@ -1634,9 +1836,14 @@ function bind() {
 
   // drop files onto a project page to add them
   const pp = $('#projectPage');
-  pp.addEventListener('dragover', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); pp.classList.add('dragging'); } });
+  pp.addEventListener('dragover', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); pp.classList.toggle('dragging', !e.target.closest('#composer')); } });
   pp.addEventListener('dragleave', e => { if (e.target === pp || !pp.contains(e.relatedTarget)) pp.classList.remove('dragging'); });
-  pp.addEventListener('drop', e => { e.preventDefault(); pp.classList.remove('dragging'); const f = [...(e.dataTransfer.files || [])]; if (f.length) uploadFiles(f); });
+  pp.addEventListener('drop', e => {
+    pp.classList.remove('dragging');
+    if (e.target.closest('#composer')) return; // dropped on the message box: attach to the message
+    e.preventDefault(); e.__handledByProject = true;
+    const f = [...(e.dataTransfer.files || [])]; if (f.length) uploadFiles(f);
+  });
 
   const sc = $('#scroller');
   sc.addEventListener('scroll', () => { $('#jumpBtn').hidden = nearBottom(); }, { passive: true });
@@ -1666,6 +1873,9 @@ async function init() {
   if (qs.get('shell') === 'electron') document.documentElement.classList.add('is-app', 'os-' + (qs.get('os') || 'other'));
   applyTheme();
   bind();
+  bindAttachments();
+  enhanceSelect($('#modelSel'));
+  enhanceSelect($('#permSel'));
   try { S.info = await api('/api/info'); } catch { S.info = { home: '', user: '' }; }
   updateProfile();
   if (!S.settings.cwd) S.settings.cwd = S.info.defaultCwd || S.info.home || '';

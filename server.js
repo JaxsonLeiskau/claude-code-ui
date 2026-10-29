@@ -26,6 +26,22 @@ const PROJ_FILE = path.join(APP_DIR, 'projects.json');
 const PROJ_ROOT = path.join(APP_DIR, 'projects');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const ai = require('./ai');
+const UPLOADS_DIR = path.join(APP_DIR, 'uploads');
+const IMG_RE = /\.(png|jpe?g|gif|webp)$/i;
+const TEXTLIKE_RE = /\.(txt|md|markdown|csv|tsv|json|ya?ml|toml|ini|xml|html?|css|js|jsx|ts|tsx|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|sh|ps1|bat|sql|log|conf|cfg|env)$/i;
+/** An uploaded file's absolute path from its id ("<folder>/<name>"), or null. */
+function uploadPath(id) {
+  const fp = path.resolve(UPLOADS_DIR, String(id || ''));
+  return fp.startsWith(UPLOADS_DIR + path.sep) && fs.existsSync(fp) ? fp : null;
+}
+const uploadUrl = fp => fp && fp.startsWith(UPLOADS_DIR + path.sep) ? '/api/uploads/' + path.relative(UPLOADS_DIR, fp).split(path.sep).map(encodeURIComponent).join('/') : null;
+// What Claude Code is told about attached files (it opens them itself with the Read tool)
+const attachBlock = paths => paths.length ? `\n\n<attachments>\nThe user attached ${paths.length === 1 ? 'this file' : 'these files'}. Open ${paths.length === 1 ? 'it' : 'them'} with the Read tool:\n${paths.map(p => '- ' + p).join('\n')}\n</attachments>` : '';
+function parseAttachments(s) {
+  const m = typeof s === 'string' && s.match(/<attachments>([\s\S]*?)<\/attachments>/);
+  if (!m) return [];
+  return m[1].split('\n').filter(l => l.startsWith('- ')).map(l => l.slice(2).trim()).map(p => ({ name: p.split(/[\\/]/).pop(), url: fs.existsSync(p) ? uploadUrl(p) : null, image: IMG_RE.test(p) }));
+}
 ai.init({ APP_DIR, spawnClaude: (...a) => spawnClaude(...a) });
 let sync = null; // GitHub sync, set up below
 const commands = require('./commands');
@@ -62,6 +78,7 @@ function cleanUserText(s) {
   }
   return s
     .replace(/<project-context>[\s\S]*?<\/project-context>\s*/g, '')
+    .replace(/\s*<attachments>[\s\S]*?<\/attachments>\s*/g, '')
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
     .replace(/<\/?pasted_content[^>]*>/g, '')
     .trim();
@@ -69,13 +86,13 @@ function cleanUserText(s) {
 
 function userParts(message) {
   const c = message && message.content;
-  const out = { text: '', images: 0, toolResults: [] };
-  if (typeof c === 'string') { out.text = cleanUserText(c); return out; }
+  const out = { text: '', images: 0, toolResults: [], attachments: [] };
+  if (typeof c === 'string') { out.text = cleanUserText(c); out.attachments = parseAttachments(c); return out; }
   if (!Array.isArray(c)) return out;
   const texts = [];
   for (const b of c) {
     if (!b) continue;
-    if (b.type === 'text') texts.push(cleanUserText(b.text));
+    if (b.type === 'text') { texts.push(cleanUserText(b.text)); out.attachments.push(...parseAttachments(b.text)); }
     else if (b.type === 'image') out.images++;
     else if (b.type === 'tool_result') out.toolResults.push(b);
   }
@@ -133,7 +150,8 @@ async function scanFile({ file, projectDir }) {
     if (o.isSidechain || o.isMeta) return;
     if (o.type === 'user' && !o.isCompactSummary) {
       const p = userParts(o.message);
-      if (p.text && !p.text.startsWith('[Request interrupted')) { userCount++; if (!firstPrompt) firstPrompt = p.text; }
+      const label = p.text || (p.attachments.length ? p.attachments.map(a => a.name).join(', ') : '');
+      if (label && !label.startsWith('[Request interrupted')) { userCount++; if (!firstPrompt) firstPrompt = label; }
     }
   });
   const info = userCount ? {
@@ -206,7 +224,7 @@ async function loadTurns(file, limitBytes) {
         if (t) { t.result = clip(resultText(r.content), 30000); t.isError = !!r.is_error; t.status = r.is_error ? 'error' : 'done'; }
       }
       if (p.text.startsWith('[Request interrupted')) { turns.push({ role: 'notice', text: 'Interrupted' }); return; }
-      if (p.text || p.images) turns.push({ role: 'user', text: p.text, images: p.images, ts: o.timestamp });
+      if (p.text || p.images || p.attachments.length) turns.push({ role: 'user', text: p.text, images: p.images, attachments: p.attachments, ts: o.timestamp });
     } else if (o.type === 'assistant') {
       const content = o.message && o.message.content;
       if (!Array.isArray(content)) return;
@@ -395,6 +413,28 @@ function queueMemoryUpdate(projectId, exchange) {
   const next = prev.then(() => updateMemory(projectId, exchange)).catch(e => console.error('Memory update failed:', e.message));
   memoryQueue.set(projectId, next);
 }
+// Short chat titles written by Claude after the first reply, like the Claude apps do
+async function autoTitle(run) {
+  if (!ai.autoTitlesOn() || !run.sessionId || !run.replyText) return;
+  const input = `Write a short title (2 to 6 words) for a chat that begins like this. Reply with only the title: no quotes, no ending punctuation.\n\n<user>\n${run.fullPrompt.slice(0, 3000)}\n</user>\n<assistant>\n${run.replyText.slice(0, 2000)}\n</assistant>`;
+  const dir = path.join(APP_DIR, 'titles');
+  await fsp.mkdir(dir, { recursive: true });
+  const res = await runClaudeOnce(['-p', '--output-format', 'json', '--no-session-persistence', '--tools', '', '--model', 'haiku'], input, dir);
+  let title = res && !res.is_error && typeof res.result === 'string' ? res.result.trim().split('\n')[0].replace(/[*_`]/g, '').replace(/^(title:\s*)/i, '').replace(/^["'#\s]+|["'.\s]+$/g, '').slice(0, 80) : '';
+  if (!title || /^NO_CHANGE$/i.test(title)) return;
+  if (isAppChatId(run.sessionId)) {
+    const chat = await loadChat(run.sessionId);
+    if (!chat || chat.titleSetByUser) return;
+    chat.title = title; chat.titleAuto = true; chat.edited = new Date().toISOString();
+    await saveChat(chat);
+  } else {
+    const cur = meta.sessions[run.sessionId] || {};
+    if (cur.title) return; // the user (or an earlier title) already named it
+    meta.sessions[run.sessionId] = { ...cur, title, titleAuto: true };
+    saveMeta();
+  }
+}
+
 function runClaudeOnce(args, input, cwd) {
   return new Promise(resolve => {
     let out = '';
@@ -452,6 +492,13 @@ function finishRun(run, code) {
   for (const l of run.listeners) l(null);
   run.listeners.clear();
   setTimeout(() => runs.delete(run.id), 10 * 60 * 1000);
+  if (run.isNew && !run.stopped) {
+    if (!run.replyText) {
+      run.replyText = run.events.filter(e => e.kind === 'claude' && e.data.type === 'assistant' && !e.data.parent_tool_use_id)
+        .flatMap(e => ((e.data.message && e.data.message.content) || []).filter(b => b.type === 'text').map(b => b.text)).join('\n\n');
+    }
+    autoTitle(run).catch(e => console.error('Title failed:', e.message)).finally(() => { if (sync) sync.soon(); });
+  }
   if (sync) sync.soon();
   // feed the project's shared memory
   if (run.projectId && store.projects[run.projectId] && !run.stopped && run.replyText) {
@@ -470,7 +517,7 @@ function activeRunFor(sessionId) {
   return null;
 }
 
-async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowedTools, project }) {
+async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowedTools, project, attachments = [] }) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
   if (sessionId) args.push('--resume', sessionId);
   if (model) args.push('--model', model);
@@ -479,7 +526,7 @@ async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowed
   if (allowedTools && allowedTools.length) args.push('--allowedTools', allowedTools.join(','));
 
   const run = {
-    id: crypto.randomUUID(), sessionId: sessionId || null, cwd, prompt: prompt.slice(0, 200), fullPrompt: prompt,
+    id: crypto.randomUUID(), sessionId: sessionId || null, cwd, prompt: prompt.slice(0, 200), fullPrompt: prompt, isNew: !sessionId,
     projectId: project && !project.virtual ? project.id : null,
     events: [], listeners: new Set(), done: false, startSize: 0, startedAt: Date.now(),
   };
@@ -497,9 +544,10 @@ async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowed
     if (needs) input = (await buildContext(project, sessionId)) + '\n\n' + prompt;
     args.push('--add-dir', projDir(project.id));
   }
+  if (attachments.length) { input += attachBlock(attachments); args.push('--add-dir', UPLOADS_DIR); }
   runs.set(run.id, run);
   pushEvent(run, { kind: 'start', runId: run.id, sessionId: run.sessionId });
-  pushEvent(run, { kind: 'user', text: prompt });
+  pushEvent(run, { kind: 'user', text: prompt, attachments: attachments.map(p => ({ name: path.basename(p), url: uploadUrl(p), image: IMG_RE.test(p) })) });
 
   let proc;
   try {
@@ -593,7 +641,7 @@ async function listAppChats() {
 function chatTurns(c) {
   const turns = [];
   for (const m of c.messages) {
-    if (m.role === 'user') turns.push({ role: 'user', text: m.text, ts: m.ts });
+    if (m.role === 'user') turns.push({ role: 'user', text: m.text, ts: m.ts, attachments: (m.attachments || []).map(a => ({ name: a.name, image: a.image, url: uploadUrl(uploadPath(a.id)) })) });
     else if (m.debate) turns.push({ role: 'assistant', ts: m.ts, blocks: [{ type: 'debate', ...m.debate }, ...(m.text ? [{ type: 'text', text: m.text }] : [])], result: m.ms ? { ms: m.ms } : undefined });
     else turns.push({ role: 'assistant', ts: m.ts, speaker: m.speaker, blocks: m.text ? [{ type: 'text', text: m.text }] : [], errorText: m.error, result: m.ms ? { ms: m.ms } : undefined });
   }
@@ -614,15 +662,36 @@ async function plainProjectContext(project) {
   return parts.join('\n\n');
 }
 
-async function startAppRun({ chat, prompt }) {
+// Chat-API message content: text, plus images as data URLs and small text files inline
+async function apiContent(text, atts) {
+  if (!atts || !atts.length) return text;
+  const parts = [];
+  let extra = '';
+  for (const a of atts) {
+    const fp = uploadPath(a.id);
+    if (!fp) { extra += `\n\n(Attached file "${a.name}" isn't available on this computer.)`; continue; }
+    const st = await fsp.stat(fp);
+    if (IMG_RE.test(fp) && st.size <= 15e6) {
+      const ext = path.extname(fp).slice(1).toLowerCase().replace('jpg', 'jpeg');
+      parts.push({ type: 'image_url', image_url: { url: `data:image/${ext};base64,${(await fsp.readFile(fp)).toString('base64')}` } });
+    } else if (TEXTLIKE_RE.test(fp) && st.size <= 200000) {
+      extra += `\n\n<file name="${a.name}">\n${await fsp.readFile(fp, 'utf8')}\n</file>`;
+    } else extra += `\n\n(The user attached "${a.name}", which can't be shown to this model.)`;
+  }
+  const body = (text || (parts.length ? 'Please look at the attached image.' : '')) + extra;
+  return parts.length ? [{ type: 'text', text: body }, ...parts] : body;
+}
+
+async function startAppRun({ chat, prompt, attachments = [] }) {
   const run = {
-    id: crypto.randomUUID(), sessionId: chat.id, cwd: null, prompt: prompt.slice(0, 200), fullPrompt: prompt,
+    id: crypto.randomUUID(), sessionId: chat.id, cwd: null, prompt: prompt.slice(0, 200), fullPrompt: prompt, isNew: !chat.messages.length,
     projectId: chat.projectId && store.projects[chat.projectId] ? chat.projectId : null,
     events: [], listeners: new Set(), done: false, startedAt: Date.now(), abort: new AbortController(), app: true,
   };
   runs.set(run.id, run);
   pushEvent(run, { kind: 'start', runId: run.id, sessionId: chat.id, appChat: { kind: chat.kind, provider: chat.provider } });
-  pushEvent(run, { kind: 'user', text: prompt });
+  const atts = attachments.map(fp => ({ id: path.relative(UPLOADS_DIR, fp).split(path.sep).join('/'), name: path.basename(fp), image: IMG_RE.test(fp) }));
+  pushEvent(run, { kind: 'user', text: prompt, attachments: atts.map(a => ({ name: a.name, image: a.image, url: uploadUrl(uploadPath(a.id)) })) });
   // only the latest snapshot is kept, so re-attaching doesn't replay hundreds of them
   const snap = turn => {
     const ev = { kind: 'snapshot', turn, t: Date.now() };
@@ -632,12 +701,12 @@ async function startAppRun({ chat, prompt }) {
   };
   const history = [];
   for (const m of chat.messages) {
-    if (m.role === 'user') history.push({ role: 'user', content: m.text });
+    if (m.role === 'user') history.push({ role: 'user', content: await apiContent(m.text, m.attachments) });
     else if (m.text) history.push({ role: 'assistant', content: m.text });
   }
   const started = Date.now();
-  chat.messages.push({ role: 'user', text: prompt, ts: new Date().toISOString() });
-  if (!chat.title || chat.messages.filter(m => m.role === 'user').length === 1) chat.title = prompt.replace(/\s+/g, ' ').trim().slice(0, 100);
+  chat.messages.push({ role: 'user', text: prompt, ts: new Date().toISOString(), ...(atts.length ? { attachments: atts } : {}) });
+  if (!chat.title || chat.messages.filter(m => m.role === 'user').length === 1) chat.title = (prompt || atts.map(a => a.name).join(', ')).replace(/\s+/g, ' ').trim().slice(0, 100);
   chat.updated = new Date().toISOString();
   await saveChat(chat);
 
@@ -648,7 +717,7 @@ async function startAppRun({ chat, prompt }) {
     try {
       if (chat.kind === 'debate') {
         const st = await ai.runDebate({
-          question: prompt, history, context, signal: run.abort.signal,
+          question: await apiContent(prompt, atts), attachments, history, context, signal: run.abort.signal,
           emit: s => snap({ role: 'assistant', blocks: [{ type: 'debate', ...s, consensus: undefined }, ...(s.consensus ? [{ type: 'text', text: s.consensus, draft: s.phase !== 'done' }] : [])] }),
         });
         reply.debate = { participants: st.participants, rounds: st.rounds, moderator: st.moderator, phase: 'done' };
@@ -656,7 +725,7 @@ async function startAppRun({ chat, prompt }) {
       } else {
         const speaker = ai.providerName(chat.provider);
         let last = 0;
-        const msgs = [...(context ? [{ role: 'system', content: context }] : []), ...history, { role: 'user', content: prompt }];
+        const msgs = [...(context ? [{ role: 'system', content: context }] : []), ...history, { role: 'user', content: await apiContent(prompt, atts) }];
         reply.speaker = speaker;
         reply.text = await ai.complete(chat.provider, msgs, {
           signal: run.abort.signal,
@@ -749,6 +818,26 @@ async function route(req, res) {
   }
   if (p === '/api/sync/disconnect' && m === 'POST') return send(res, 200, sync.disconnect());
 
+  if (p === '/api/uploads' && m === 'POST') {
+    const body = await readBody(req, 40e6);
+    const data = Buffer.from(String(body.data || ''), 'base64');
+    if (!data.length) return send(res, 400, { error: 'That file is empty' });
+    if (data.length > 25e6) return send(res, 400, { error: 'Files can be up to 25 MB' });
+    const dir = path.join(UPLOADS_DIR, new Date().toISOString().slice(0, 10) + '-' + crypto.randomBytes(4).toString('hex'));
+    await fsp.mkdir(dir, { recursive: true });
+    const name = safeName(body.name || 'file');
+    const fp = path.join(dir, name);
+    await fsp.writeFile(fp, data);
+    return send(res, 200, { id: path.relative(UPLOADS_DIR, fp).split(path.sep).join('/'), name, size: data.length, image: IMG_RE.test(name), url: uploadUrl(fp) });
+  }
+  if (p.startsWith('/api/uploads/') && m === 'GET') {
+    const fp = uploadPath(decodeURIComponent(p.slice('/api/uploads/'.length)));
+    if (!fp) return send(res, 404, { error: 'Not found' });
+    const types = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.pdf': 'application/pdf' };
+    res.writeHead(200, { 'Content-Type': types[path.extname(fp).toLowerCase()] || 'application/octet-stream', 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'" });
+    return fs.createReadStream(fp).pipe(res);
+  }
+
   if (p === '/api/commands' && m === 'GET') {
     let cwd = url.searchParams.get('cwd') || '';
     if (cwd) cwd = localPath(cwd);
@@ -805,7 +894,7 @@ async function route(req, res) {
       }
       if (m === 'PATCH') {
         const body = await readBody(req);
-        if (typeof body.title === 'string' && body.title.trim()) chat.title = body.title.trim().slice(0, 200);
+        if (typeof body.title === 'string' && body.title.trim()) { chat.title = body.title.trim().slice(0, 200); chat.titleSetByUser = true; delete chat.titleAuto; }
         if (typeof body.pinned === 'boolean') chat.pinned = body.pinned;
         if (typeof body.projectId === 'string') {
           let pid = body.projectId;
@@ -836,7 +925,7 @@ async function route(req, res) {
     if (m === 'PATCH') {
       const body = await readBody(req);
       const cur = meta.sessions[id] || {};
-      if (typeof body.title === 'string') cur.title = body.title.trim().slice(0, 200) || undefined;
+      if (typeof body.title === 'string') { cur.title = body.title.trim().slice(0, 200) || undefined; delete cur.titleAuto; }
       if (typeof body.cwd === 'string' && body.cwd.trim()) {
         // a chat synced from another device can continue in a folder on this one
         const dir = path.resolve(body.cwd.trim());
@@ -970,8 +1059,9 @@ async function route(req, res) {
 
   if (p === '/api/chat' && m === 'POST') {
     const body = await readBody(req);
-    const prompt = String(body.prompt || '').trim();
-    if (!prompt) return send(res, 400, { error: 'Empty message' });
+    const attachments = (Array.isArray(body.attachments) ? body.attachments : []).map(uploadPath).filter(Boolean).slice(0, 20);
+    const prompt = String(body.prompt || '').trim() || (attachments.length ? '' : '');
+    if (!prompt && !attachments.length) return send(res, 400, { error: 'Empty message' });
     const sessionId = body.sessionId || null;
     if (sessionId && !ID_RE.test(sessionId)) return send(res, 400, { error: 'Bad session id' });
     if (sessionId && activeRunFor(sessionId)) return send(res, 409, { error: 'Still working on the last message in this chat' });
@@ -989,7 +1079,7 @@ async function route(req, res) {
         const pid = body.projectId && store.projects[body.projectId] ? body.projectId : null;
         chat = { id: 'a-' + crypto.randomBytes(8).toString('hex'), kind, provider: kind === 'model' ? provider : null, title: '', projectId: pid, created: now, updated: now, device: os.hostname(), messages: [] };
       }
-      const run = await startAppRun({ chat, prompt });
+      const run = await startAppRun({ chat, prompt, attachments });
       return send(res, 200, { runId: run.id, sessionId: chat.id });
     }
     let cwd = body.cwd || os.homedir();
@@ -1023,7 +1113,7 @@ async function route(req, res) {
     const model = body.model && MODEL_RE.test(body.model) ? body.model : null;
     const permissionMode = PERM_MODES.has(body.permissionMode) ? body.permissionMode : 'default';
     const allowedTools = (Array.isArray(body.allowedTools) ? body.allowedTools : []).filter(t => TOOL_RE.test(t));
-    const run = await startRun({ sessionId, prompt, cwd, model, permissionMode, allowedTools, project });
+    const run = await startRun({ sessionId, prompt: prompt || 'Please look at the attached file' + (attachments.length > 1 ? 's.' : '.'), cwd, model, permissionMode, allowedTools, project, attachments });
     return send(res, 200, { runId: run.id });
   }
 
