@@ -12,7 +12,7 @@ const path = require('path');
 const zlib = require('zlib');
 
 /* ---------------- minimal zip reader ---------------- */
-function readZip(buf) {
+function readZip(buf, { maxEntry } = {}) {
   let eocd = -1;
   for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
   if (eocd < 0) throw new Error('That file isn\'t a zip archive.');
@@ -30,7 +30,7 @@ function readZip(buf) {
       const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
       const data = buf.subarray(start, start + csize);
       if (method === 0) return data;
-      if (method === 8) return zlib.inflateRawSync(data);
+      if (method === 8) return zlib.inflateRawSync(data, maxEntry ? { maxOutputLength: maxEntry } : {});
       throw new Error(`Unsupported compression in ${name}`);
     });
     off += 46 + nlen + elen + clen;
@@ -40,6 +40,95 @@ function readZip(buf) {
 function findJson(entries, base) {
   for (const [name, get] of entries) if (path.posix.basename(name).toLowerCase() === base) return JSON.parse(get().toString('utf8'));
   return null;
+}
+
+/* ---------------- text from Word, PowerPoint and Excel files ---------------- */
+// These files are zips of XML. The text is pulled out so every chat can read it (Claude's file
+// reader and the other AIs can't open them as they are). Formatting and pictures are left out.
+const ENTITIES = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" };
+const unxml = s => s.replace(/<[^>]+>/g, '').replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (all, e) => {
+  if (e[0] !== '#') return ENTITIES[e.toLowerCase()] ?? all;
+  const n = e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+  return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : '';
+});
+const tidy = s => s.split('\n').map(l => l.replace(/[ \t]*\|[ \t]*$/, '').replace(/ +\| +/g, ' | ').trimEnd()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+const xmlOf = (entries, name) => { const get = entries.get(name); return get ? get().toString('utf8') : ''; };
+// relationship id -> part name, for parts that point at each other (slide order, sheet names)
+function rels(entries, part) {
+  const dir = path.posix.dirname(part), out = new Map();
+  const xml = xmlOf(entries, `${dir}/_rels/${path.posix.basename(part)}.rels`);
+  for (const m of xml.matchAll(/<Relationship\b[^>]*>/g)) {
+    const id = (m[0].match(/\bId="([^"]+)"/) || [])[1], target = (m[0].match(/\bTarget="([^"]+)"/) || [])[1];
+    if (id && target) out.set(id, target.startsWith('/') ? target.slice(1) : path.posix.normalize(`${dir}/${target}`));
+  }
+  return out;
+}
+const byNumber = (a, b) => +(a.match(/(\d+)\.xml$/) || [0, 0])[1] - +(b.match(/(\d+)\.xml$/) || [0, 0])[1];
+
+// Only the typed text (w:t / a:t runs) is kept, so picture positions and other numbers in the XML stay out.
+// Table cells become "a | b" on one line.
+function runsText(xml, ns) {
+  const re = new RegExp(`<${ns}:t(?:\\s[^>]*)?>([\\s\\S]*?)</${ns}:t>|<${ns}:tab/>|<${ns}:(?:br|cr)\\b[^>]*/>|</${ns}:p>|<${ns}:tc\\b[^>]*[^/]>|<${ns}:tc>|</${ns}:tc>|</${ns}:tr>`, 'g');
+  let out = '', cell = 0;
+  for (const m of xml.matchAll(re)) {
+    const tok = m[0];
+    if (m[1] !== undefined) out += unxml(m[1]);
+    else if (tok.endsWith('tab/>')) out += '\t';
+    else if (tok.endsWith('/>')) out += '\n';
+    else if (tok === `</${ns}:p>`) out += cell ? ' ' : '\n';
+    else if (tok === `</${ns}:tc>`) { cell = Math.max(0, cell - 1); out += ' | '; }
+    else if (tok === `</${ns}:tr>`) out += '\n';
+    else cell++;
+  }
+  return tidy(out);
+}
+function wordText(entries) {
+  const xml = xmlOf(entries, 'word/document.xml')
+    .replace(/<mc:Fallback>[\s\S]*?<\/mc:Fallback>/g, '') // text boxes are stored twice
+    .replace(/<w:(instrText|delText)\b[^>]*>[\s\S]*?<\/w:\1>/g, ''); // field codes and deleted text
+  return runsText(xml, 'w');
+}
+function slidesText(entries) {
+  const pres = 'ppt/presentation.xml', r = rels(entries, pres);
+  let slides = [...xmlOf(entries, pres).matchAll(/<p:sldId\b[^>]*\br:id="([^"]+)"/g)].map(m => r.get(m[1])).filter(n => n && entries.has(n));
+  if (!slides.length) slides = [...entries.keys()].filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n)).sort(byNumber);
+  const text = part => runsText(xmlOf(entries, part).replace(/<mc:Fallback>[\s\S]*?<\/mc:Fallback>/g, ''), 'a');
+  return slides.map((s, i) => {
+    const notes = [...rels(entries, s).values()].find(t => /notesSlide\d+\.xml$/.test(t));
+    const n = notes ? text(notes).replace(/^\d+$/gm, '').trim() : ''; // notes pages also hold the slide number
+    return `## Slide ${i + 1}\n${text(s) || '(no text on this slide)'}${n ? `\n\nSpeaker notes:\n${n}` : ''}`;
+  }).join('\n\n');
+}
+function sheetsText(entries) {
+  const shared = [...xmlOf(entries, 'xl/sharedStrings.xml').replace(/<rPh\b[\s\S]*?<\/rPh>/g, '').matchAll(/<si>([\s\S]*?)<\/si>/g)]
+    .map(m => unxml([...m[1].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map(t => t[1]).join('')));
+  const wb = 'xl/workbook.xml', r = rels(entries, wb);
+  let sheets = [...xmlOf(entries, wb).matchAll(/<sheet\b[^>]*>/g)].map(m => ({ name: unxml((m[0].match(/\bname="([^"]*)"/) || [])[1] || ''), part: r.get((m[0].match(/\br:id="([^"]+)"/) || [])[1]) })).filter(s => s.part && entries.has(s.part));
+  if (!sheets.length) sheets = [...entries.keys()].filter(n => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort(byNumber).map((part, i) => ({ name: `Sheet${i + 1}`, part }));
+  const col = ref => [...(ref.match(/^[A-Z]+/i) || [''])[0].toUpperCase()].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+  return sheets.map(({ name, part }) => {
+    const rows = [];
+    for (const row of xmlOf(entries, part).matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
+      const cells = [];
+      for (const c of row[1].matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+        const attrs = c[1], body = c[2] || '';
+        const t = (attrs.match(/\bt="([^"]+)"/) || [])[1], v = unxml((body.match(/<v>([\s\S]*?)<\/v>/) || [])[1] || '');
+        const val = t === 's' ? shared[+v] ?? '' : t === 'b' ? (v === '1' ? 'TRUE' : 'FALSE') : t === 'inlineStr' ? unxml(body.replace(/<rPh\b[\s\S]*?<\/rPh>/g, '')) : v;
+        const at = col((attrs.match(/\br="([A-Z]+)/i) || [])[1] || '');
+        cells[at >= 0 ? at : cells.length] = val.replace(/[\t\n]+/g, ' ');
+      }
+      if (cells.some(x => x)) rows.push(Array.from(cells, x => x ?? '').join('\t').replace(/\t+$/, ''));
+    }
+    return `## Sheet: ${name}\n${rows.join('\n')}`;
+  }).join('\n\n');
+}
+/** The text of a .docx, .pptx or .xlsx file ('' if there's none). Throws if it isn't one. */
+function officeText(buf, ext) {
+  const entries = readZip(buf, { maxEntry: 300e6 });
+  const kind = String(ext).toLowerCase().replace(/^\./, '');
+  const text = kind === 'docx' ? wordText(entries) : kind === 'pptx' ? slidesText(entries) : kind === 'xlsx' ? sheetsText(entries) : null;
+  if (text === null) throw new Error('Not a Word, PowerPoint or Excel file');
+  return text.length > 2e6 ? text.slice(0, 2e6) + '\n\n(The rest of the file was cut off because it is so long.)' : text;
 }
 
 /* ---------------- mapping ---------------- */
@@ -211,4 +300,4 @@ async function importExport(buf, D) {
   return out;
 }
 
-module.exports = { importExport, readZip, _ids: { chatIdFor, projectIdFor } };
+module.exports = { importExport, readZip, officeText, _ids: { chatIdFor, projectIdFor } };

@@ -12,7 +12,8 @@ The owner isn't a programmer: explain changes in plain language, and keep the ap
   debate mode (Claude runs through the CLI with tools off).
 - `sync.js` — sync through a private GitHub repo via the GitHub REST API (three-way compare per file).
 - `commands.js` — the `/` menu (skills, commands, plugins, headless-safe built-ins).
-- `import.js` — imports claude.ai data exports (old single zip and new split zips / manifest).
+- `import.js` — imports claude.ai data exports (old single zip and new split zips / manifest), and pulls the
+  text out of attached Word, PowerPoint and Excel files (`officeText`) so every chat can read them.
 - `remote.js` — optional phone access: a second listener (default port 3500) that only answers Tailscale
   addresses and needs a password sign-in (cookie session, lockout after failed tries).
 - `electron/main.js` + `electron/preload.js` — windows, menu, auto-updates, claude.ai export downloads.

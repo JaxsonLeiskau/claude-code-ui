@@ -119,6 +119,51 @@ const { start } = require('../server.js');
   const eocd = Buffer.alloc(22); eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(1, 8); eocd.writeUInt16LE(1, 10); eocd.writeUInt32LE(cdBuf.length, 12); eocd.writeUInt32LE(body.length, 16);
   assert.strictEqual(readZip(Buffer.concat([body, cdBuf, eocd])).get('conversations.json')().toString(), '[]', 'reads zip files');
 
+  // Word, PowerPoint and Excel attachments: their text is taken out so every chat can read it
+  const zipOf = files => { // a stored (uncompressed) zip
+    const locals = [], centrals = []; let at = 0;
+    for (const [n, text] of Object.entries(files)) {
+      const name = Buffer.from(n), data = Buffer.from(text);
+      const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(data.length, 22); lh.writeUInt16LE(name.length, 26);
+      const cd = Buffer.alloc(46); cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt32LE(data.length, 20); cd.writeUInt32LE(data.length, 24); cd.writeUInt16LE(name.length, 28); cd.writeUInt32LE(at, 42);
+      locals.push(lh, name, data); centrals.push(cd, name); at += 30 + name.length + data.length;
+    }
+    const cdAll = Buffer.concat(centrals), end = Buffer.alloc(22);
+    end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(Object.keys(files).length, 8); end.writeUInt16LE(Object.keys(files).length, 10); end.writeUInt32LE(cdAll.length, 12); end.writeUInt32LE(at, 16);
+    return Buffer.concat([...locals, cdAll, end]);
+  };
+  const { officeText } = require('../import.js');
+  const docx = zipOf({ 'word/document.xml': '<w:document><w:body><w:p><w:r><w:t>Lab 7 &amp; IPsec</w:t></w:r></w:p><w:p><w:r><wp:posOffset>1569720</wp:posOffset><w:t xml:space="preserve">Step </w:t><w:tab/><w:t>one</w:t></w:r></w:p>'
+    + '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Router</w:t></w:r></w:p></w:tc><w:tc><w:tcPr/><w:p><w:r><w:t>IP</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>R1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>10.1.1.2</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'
+    + '<w:p><w:r><w:delText>gone</w:delText><w:instrText>PAGE</w:instrText><w:t>Done</w:t></w:r></w:p></w:body></w:document>' });
+  assert.strictEqual(officeText(docx, '.docx'), 'Lab 7 & IPsec\nStep \tone\nRouter | IP\nR1 | 10.1.1.2\nDone', 'reads Word documents, tables included');
+  const pptx = zipOf({
+    'ppt/presentation.xml': '<p:presentation><p:sldIdLst><p:sldId id="257" r:id="rId3"/><p:sldId id="256" r:id="rId2"/></p:sldIdLst></p:presentation>',
+    'ppt/_rels/presentation.xml.rels': '<Relationships><Relationship Id="rId2" Target="slides/slide1.xml"/><Relationship Id="rId3" Target="slides/slide2.xml"/></Relationships>',
+    'ppt/slides/slide1.xml': '<p:sld><a:p><a:r><a:t>Second</a:t></a:r></a:p></p:sld>',
+    'ppt/slides/slide2.xml': '<p:sld><a:p><a:r><a:t>Title</a:t></a:r><a:br/><a:r><a:t>line two</a:t></a:r></a:p></p:sld>',
+    'ppt/slides/_rels/slide2.xml.rels': '<Relationships><Relationship Id="rId1" Target="../notesSlides/notesSlide1.xml"/></Relationships>',
+    'ppt/notesSlides/notesSlide1.xml': '<p:notes><a:p><a:r><a:t>Say hello</a:t></a:r></a:p><a:p><a:r><a:t>1</a:t></a:r></a:p></p:notes>',
+  });
+  assert.strictEqual(officeText(pptx, '.pptx'), '## Slide 1\nTitle\nline two\n\nSpeaker notes:\nSay hello\n\n## Slide 2\nSecond', 'reads slides in show order, with speaker notes');
+  const xlsx = zipOf({
+    'xl/workbook.xml': '<workbook><sheets><sheet name="Grades &amp; more" sheetId="1" r:id="rId1"/></sheets></workbook>',
+    'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+    'xl/sharedStrings.xml': '<sst><si><t>Name</t></si><si><r><t>Sc</t></r><r><t>ore</t></r></si></sst>',
+    'xl/worksheets/sheet1.xml': '<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>Ana</t></is></c><c r="B2" s="1"/><c r="C2"><v>97.5</v></c><c r="D2" t="b"><v>1</v></c></row></sheetData></worksheet>',
+  });
+  assert.strictEqual(officeText(xlsx, '.xlsx'), '## Sheet: Grades & more\nName\t\tScore\nAna\t\t97.5\tTRUE', 'reads spreadsheets cell by cell');
+  assert.throws(() => officeText(Buffer.from('not a zip'), '.docx'), 'refuses files that aren\'t really Word files');
+  // the text is saved next to the upload, and each kind of chat is pointed at it
+  const upDir = path.join(tmp, '.roundtable', 'uploads', 'office-test');
+  fs.mkdirSync(upDir, { recursive: true });
+  const labFile = path.join(upDir, 'Lab 7.docx');
+  fs.writeFileSync(labFile, docx);
+  const txt = await _internal.officeTextFile(labFile);
+  assert.ok(txt === labFile + '.txt' && fs.readFileSync(txt, 'utf8').includes('R1 | 10.1.1.2'), 'saves the text next to the attached file');
+  assert.ok(_internal.attachBlock([labFile], [txt]).includes(`Read its text instead: ${txt}`), 'tells Claude Code where the text is');
+  assert.ok(String(await _internal.apiContent('Help with this', [{ id: 'office-test/Lab 7.docx', name: 'Lab 7.docx' }])).includes('<file name="Lab 7.docx">'), 'other AIs get the text too');
+
   // Phone access (Tailscale only, password, sign-in cookie)
   const { _test: rt } = require('../remote.js');
   assert.ok(rt.isTailscale('100.101.5.9') && rt.isTailscale('::ffff:100.64.0.1') && rt.isTailscale('fd7a:115c:a1e0::1'), 'accepts Tailscale addresses');

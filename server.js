@@ -36,7 +36,23 @@ function uploadPath(id) {
 }
 const uploadUrl = fp => fp && fp.startsWith(UPLOADS_DIR + path.sep) ? '/api/uploads/' + path.relative(UPLOADS_DIR, fp).split(path.sep).map(encodeURIComponent).join('/') : null;
 // What Claude Code is told about attached files (it opens them itself with the Read tool)
-const attachBlock = paths => paths.length ? `\n\n<attachments>\nThe user attached ${paths.length === 1 ? 'this file' : 'these files'}. Open ${paths.length === 1 ? 'it' : 'them'} with the Read tool:\n${paths.map(p => '- ' + p).join('\n')}\n</attachments>` : '';
+const attachBlock = (paths, texts = []) => paths.length ? `\n\n<attachments>\nThe user attached ${paths.length === 1 ? 'this file' : 'these files'}. Open ${paths.length === 1 ? 'it' : 'them'} with the Read tool:\n${paths.map((p, i) => '- ' + p + (texts[i] ? `\n  (The Read tool can't open this kind of file. Read its text instead: ${texts[i]})` : '')).join('\n')}\n</attachments>` : '';
+// Word, PowerPoint and Excel files: their text is saved next to them ("name.docx.txt") the first time it's needed
+const OFFICE_RE = /\.(docx|pptx|xlsx)$/i;
+async function officeTextFile(fp) {
+  if (!OFFICE_RE.test(fp)) return null;
+  const out = fp + '.txt';
+  if (fs.existsSync(out)) return out;
+  try {
+    if ((await fsp.stat(fp)).size > 300e6) return null;
+    const text = importer.officeText(await fsp.readFile(fp), path.extname(fp));
+    if (!text.trim()) return null;
+    await fsp.writeFile(out, `(The text of "${path.basename(fp)}", taken out of the file by Roundtable. Pictures and formatting aren't included.)\n\n${text}\n`);
+    return out;
+  } catch { return null; }
+}
+// what Claude gets to open: the text version in place of a file its reader can't handle
+const readablePaths = paths => Promise.all(paths.map(async p => (await officeTextFile(p)) || p));
 function parseAttachments(s) {
   const m = typeof s === 'string' && s.match(/<attachments>([\s\S]*?)<\/attachments>/);
   if (!m) return [];
@@ -564,7 +580,7 @@ async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowed
     if (needs) input = (await buildContext(project, sessionId)) + '\n\n' + prompt;
     args.push('--add-dir', projDir(project.id));
   }
-  if (attachments.length) { input += attachBlock(attachments); args.push('--add-dir', UPLOADS_DIR); }
+  if (attachments.length) { input += attachBlock(attachments, await Promise.all(attachments.map(officeTextFile))); args.push('--add-dir', UPLOADS_DIR); }
   runs.set(run.id, run);
   pushEvent(run, { kind: 'start', runId: run.id, sessionId: run.sessionId });
   pushEvent(run, { kind: 'user', text: prompt, attachments: attachments.map(p => ({ name: path.basename(p), url: uploadUrl(p), image: IMG_RE.test(p) })) });
@@ -687,7 +703,7 @@ async function plainProjectContext(project) {
 async function apiContent(text, atts) {
   if (!atts || !atts.length) return text;
   const parts = [];
-  let extra = '';
+  let extra = '', tf;
   for (const a of atts) {
     const fp = uploadPath(a.id);
     if (!fp) { extra += `\n\n(Attached file "${a.name}" isn't available on this computer.)`; continue; }
@@ -697,6 +713,10 @@ async function apiContent(text, atts) {
       parts.push({ type: 'image_url', image_url: { url: `data:image/${ext};base64,${(await fsp.readFile(fp)).toString('base64')}` } });
     } else if (TEXTLIKE_RE.test(fp) && st.size <= 200000) {
       extra += `\n\n<file name="${a.name}">\n${await fsp.readFile(fp, 'utf8')}\n</file>`;
+    } else if (OFFICE_RE.test(fp) && (tf = await officeTextFile(fp))) {
+      let t = await fsp.readFile(tf, 'utf8');
+      if (t.length > 200000) t = t.slice(0, 200000) + '\n\n(Cut off here: the rest is too long to send.)';
+      extra += `\n\n<file name="${a.name}">\n${t}\n</file>`;
     } else extra += `\n\n(The user attached "${a.name}", which can't be shown to this model.)`;
   }
   const body = (text || (parts.length ? 'Please look at the attached image.' : '')) + extra;
@@ -738,7 +758,7 @@ async function startAppRun({ chat, prompt, attachments = [] }) {
     try {
       if (chat.kind === 'debate') {
         const st = await ai.runDebate({
-          question: await apiContent(prompt, atts), attachments, history, context, signal: run.abort.signal,
+          question: await apiContent(prompt, atts), attachments: await readablePaths(attachments), history, context, signal: run.abort.signal,
           emit: s => snap({ role: 'assistant', blocks: [{ type: 'debate', ...s, consensus: undefined }, ...(s.consensus ? [{ type: 'text', text: s.consensus, draft: s.phase !== 'done' }] : [])] }),
         });
         reply.debate = { participants: st.participants, rounds: st.rounds, moderator: st.moderator, phase: 'done' };
@@ -753,7 +773,7 @@ async function startAppRun({ chat, prompt, attachments = [] }) {
           // plain Claude chats keep a Claude Code session of their own (only on the computer that made it)
           const resume = chat.cliSession && await findSessionFile(chat.cliSession) ? chat.cliSession : null;
           extra.chat = { resume, onSession: id => { chat.cliSession = id; } };
-          extra.attachments = attachments;
+          extra.attachments = await readablePaths(attachments);
         }
         reply.text = await ai.complete(chat.provider, msgs, {
           ...extra,
@@ -1309,7 +1329,7 @@ function setAppHooks(h) { appHooks = h || {}; }
 const remote = require('./remote');
 remote.init({ APP_DIR, PUBLIC_DIR, route, send, serveStatic });
 
-module.exports = { isRemoteEnabled: () => remote.isEnabled(), start, stopAll, setAppHooks, _internal: { buildContext, getProject, listSessions, store, translateHome } };
+module.exports = { isRemoteEnabled: () => remote.isEnabled(), start, stopAll, setAppHooks, _internal: { officeTextFile, apiContent, attachBlock, buildContext, getProject, listSessions, store, translateHome } };
 
 // Run directly (`node server.js`): serve and open the default browser.
 if (require.main === module) {
