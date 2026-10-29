@@ -174,11 +174,13 @@ async function scanFile({ file, projectDir }) {
   if (hit && hit.mtime === st.mtimeMs && hit.size === st.size) return hit.info;
   let text = '';
   try { text = await fsp.readFile(file, 'utf8'); } catch { return null; }
-  let cwd = null, firstPrompt = null, summary = null, customTitle = null, created = null, updated = null, userCount = 0, branch = null;
+  let cwd = null, lastCwd = null, firstPrompt = null, summary = null, customTitle = null, created = null, updated = null, userCount = 0, branch = null;
+  const cwdSeen = new Set(); // every folder the chat has worked in, most recent last
   parseLines(text, o => {
     if (o.type === 'summary' && o.summary) summary = o.summary;
     if (o.type === 'custom-title' && o.customTitle) customTitle = o.customTitle;
     if (o.cwd && !cwd) cwd = o.cwd;
+    if (o.cwd && o.cwd !== lastCwd) { lastCwd = o.cwd; cwdSeen.delete(o.cwd); cwdSeen.add(o.cwd); }
     if (o.gitBranch) branch = o.gitBranch;
     if (o.timestamp) { if (!created) created = o.timestamp; updated = o.timestamp; }
     if (o.isSidechain || o.isMeta) return;
@@ -189,7 +191,7 @@ async function scanFile({ file, projectDir }) {
     }
   });
   const info = userCount ? {
-    id, cwd: cwd || projectDir, projectDir,
+    id, cwd: cwd || projectDir, cwds: [...cwdSeen], projectDir,
     autoTitle: (customTitle || summary || firstPrompt).replace(/\s+/g, ' ').trim().slice(0, 140),
     firstPrompt: firstPrompt.replace(/\s+/g, ' ').slice(0, 300),
     created, updated: updated || new Date(st.mtimeMs).toISOString(), userCount, branch, size: st.size,
@@ -200,7 +202,7 @@ async function scanFile({ file, projectDir }) {
 
 function decorate(info) {
   const m = meta.sessions[info.id] || {};
-  const local = { ...info, cwd: m.cwdOverride || localPath(info.cwd) };
+  const local = { ...info, cwd: folderHere(info, m.cwdOverride) || localPath(info.cwd) };
   return { ...local, title: m.title || info.autoTitle, pinned: !!m.pinned, projectId: projectIdFor(local) };
 }
 const isInside = (p, dir) => !!p && (p === dir || p.startsWith(dir + path.sep));
@@ -214,6 +216,36 @@ function translateHome(p) {
   const rest = (m[2] || '').split(/[\\/]+/).filter(Boolean);
   const cand = path.join(os.homedir(), ...rest);
   return cand !== p ? cand : null;
+}
+/**
+ * The folder a chat should use on this computer: the one this computer last used for it, else the
+ * most recent folder in the chat's history that exists here. Chats that move between computers
+ * collect one folder per computer, so each computer finds its own.
+ */
+function folderHere(info, override) {
+  if (override && fs.existsSync(override)) return override;
+  const list = (info.cwds && info.cwds.length ? info.cwds : [info.cwd]).filter(Boolean);
+  for (let i = list.length - 1; i >= 0; i--) {
+    const l = localPath(list[i]);
+    if (l && fs.existsSync(l)) return l;
+  }
+  return null;
+}
+/** Folders on this computer with the same name as one the chat used elsewhere, in the usual places. */
+function sameNameFolders(list) {
+  const home = os.homedir();
+  const places = [home, 'Documents', 'Desktop', 'source/repos', 'Documents/GitHub', 'GitHub', 'Projects', 'projects', 'code', 'dev', 'repos', 'Claude Projects', 'OneDrive/Documents', 'OneDrive/Desktop', 'OneDrive/Documents/GitHub']
+    .map(d => path.resolve(home, d));
+  const out = [];
+  for (const c of [...list].reverse()) {
+    const name = String(c || '').split(/[\\/]+/).filter(Boolean).pop();
+    if (!name) continue;
+    for (const d of places) {
+      const cand = path.join(d, name);
+      try { if (fs.statSync(cand).isDirectory() && !out.includes(cand)) out.push(cand); } catch {}
+    }
+  }
+  return out.slice(0, 4);
 }
 /** The folder to use on this computer for a path that may come from another device. */
 function localPath(p) {
@@ -1212,9 +1244,14 @@ async function route(req, res) {
       const info = file && await scanFile({ file, projectDir: path.basename(path.dirname(file)) });
       if (info && info.cwd) cwd = info.cwd;
       const ov = meta.sessions[sessionId] && meta.sessions[sessionId].cwdOverride;
-      if (ov && fs.existsSync(ov)) cwd = ov;
-      else if (!fs.existsSync(cwd) && localPath(cwd) !== cwd) cwd = localPath(cwd);
-      else if (!fs.existsSync(cwd)) return send(res, 400, { error: 'This chat\'s folder isn\'t on this computer', code: 'FOLDER_MISSING', cwd });
+      const here = info ? folderHere(info, ov) : (ov && fs.existsSync(ov) ? ov : localPath(cwd));
+      if (!here || !fs.existsSync(here)) {
+        const tried = info && info.cwds && info.cwds.length ? info.cwds : [cwd];
+        return send(res, 400, { error: 'This chat\'s folder isn\'t on this computer', code: 'FOLDER_MISSING', cwd: tried[tried.length - 1], suggestions: sameNameFolders(tried) });
+      }
+      cwd = here;
+      // remember this computer's folder for this chat (kept on this computer only, never synced)
+      if (!meta.sessions[sessionId] || meta.sessions[sessionId].cwdOverride !== cwd) { meta.sessions[sessionId] = { ...(meta.sessions[sessionId] || {}), cwdOverride: cwd }; saveMeta(); }
       if (info) project = await getProject(projectIdFor(info));
     } else if (body.projectId && ID_RE.test(body.projectId)) {
       project = await getProject(body.projectId);
@@ -1329,7 +1366,7 @@ function setAppHooks(h) { appHooks = h || {}; }
 const remote = require('./remote');
 remote.init({ APP_DIR, PUBLIC_DIR, route, send, serveStatic });
 
-module.exports = { isRemoteEnabled: () => remote.isEnabled(), start, stopAll, setAppHooks, _internal: { officeTextFile, apiContent, attachBlock, buildContext, getProject, listSessions, store, translateHome } };
+module.exports = { isRemoteEnabled: () => remote.isEnabled(), start, stopAll, setAppHooks, _internal: { officeTextFile, apiContent, attachBlock, buildContext, getProject, listSessions, store, translateHome, folderHere, sameNameFolders } };
 
 // Run directly (`node server.js`): serve and open the default browser.
 if (require.main === module) {

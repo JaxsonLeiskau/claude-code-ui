@@ -74,7 +74,7 @@ async function api(url, opts = {}) {
   if (opts.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
   const r = await fetch(url, init).catch(() => { throw new Error('Can’t reach Roundtable on your computer. Check your connection (on a phone: that Tailscale is on).'); });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error(j.error || r.statusText), { code: j.code, cwd: j.cwd });
+  if (!r.ok) throw Object.assign(new Error(j.error || r.statusText), { code: j.code, cwd: j.cwd, suggestions: j.suggestions });
   return j;
 }
 
@@ -1861,7 +1861,7 @@ async function send(text) {
     if (e.code === 'FOLDER_MISSING') {
       if (!input.value) input.value = text;
       autoGrow(); renderComposerState();
-      return folderMissingDialog(v, e.cwd);
+      return folderMissingDialog(v, e.cwd, e.suggestions);
     }
     toast(e.message);
     if (!input.value) input.value = text;
@@ -1869,16 +1869,21 @@ async function send(text) {
   }
 }
 
-function folderMissingDialog(v, cwd) {
+function folderMissingDialog(v, cwd, suggestions = []) {
+  const sug = (suggestions || []).filter(Boolean);
   const m = modal({
     title: 'Folder not on this computer',
-    body: `<p>This chat was working in <code>${esc(cwd)}</code>, which doesn't exist here — it probably started on another device. Pick a folder on this computer for Claude to continue in. Files Claude made on the other device aren't copied over, only the conversation.</p>`,
-    foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="fmPick">Choose folder…</button>`,
+    body: `<p>This chat last worked in <code>${esc(cwd)}</code> on another computer, and that folder isn't here.${sug.length ? ' Is it one of these?' : ' Pick the folder on this computer for Claude to continue in — Roundtable remembers it for this chat.'}</p>`
+      + (sug.length ? `<div class="fm-sug">${sug.map((p, i) => `<button class="btn fm-opt" data-i="${i}"><code>${esc(p)}</code></button>`).join('')}</div>` : '')
+      + `<p class="muted" style="font-size:13px">Files Claude made on the other computer aren't copied over, only the conversation — use git to bring code across.</p>`,
+    foot: `<button class="btn" data-close>Cancel</button><button class="btn ${sug.length ? '' : 'primary'}" id="fmPick">${sug.length ? 'Other folder…' : 'Choose folder…'}</button>`,
   });
-  $('#fmPick', m.el).onclick = () => { m.close(); folderPicker('', async p => {
+  const use = async p => {
     try { await api(`/api/sessions/${v.id}`, { method: 'PATCH', body: { cwd: p } }); v.cwd = p; renderAll(); toast('Folder set — press Enter to send'); $('#input').focus(); }
     catch (err) { toast(err.message); }
-  }); };
+  };
+  m.el.querySelectorAll('.fm-opt').forEach(b => { b.onclick = () => { m.close(); use(sug[+b.dataset.i]); }; });
+  $('#fmPick', m.el).onclick = () => { m.close(); folderPicker('', use); };
 }
 
 async function stop() {

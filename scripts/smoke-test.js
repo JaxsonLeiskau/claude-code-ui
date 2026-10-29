@@ -164,6 +164,19 @@ const { start } = require('../server.js');
   assert.ok(_internal.attachBlock([labFile], [txt]).includes(`Read its text instead: ${txt}`), 'tells Claude Code where the text is');
   assert.ok(String(await _internal.apiContent('Help with this', [{ id: 'office-test/Lab 7.docx', name: 'Lab 7.docx' }])).includes('<file name="Lab 7.docx">'), 'other AIs get the text too');
 
+  // A chat that moved between computers finds this computer's folder
+  {
+    const { folderHere, sameNameFolders } = require('../server.js')._internal;
+    const here = path.join(tmp, 'Documents', 'roundtable'); fs.mkdirSync(here, { recursive: true });
+    const gone = 'Z:\\nowhere\\roundtable', gone2 = '/no/such/place/roundtable';
+    assert.strictEqual(folderHere({ cwds: [here, gone] }, null), here, 'falls back to the folder this computer used before');
+    assert.strictEqual(folderHere({ cwds: [gone, here] }, null), here, 'uses the most recent folder that exists here');
+    assert.strictEqual(folderHere({ cwds: [here, gone] }, tmp), tmp, 'the folder picked on this computer wins');
+    assert.strictEqual(folderHere({ cwds: [here] }, gone2), here, 'a picked folder that was removed is ignored');
+    assert.strictEqual(folderHere({ cwds: [gone, gone2] }, null), null, 'asks when nothing matches');
+    assert.deepStrictEqual(sameNameFolders([gone]), [here], 'finds a same-named folder in Documents');
+  }
+
   // Phone access (Tailscale only, password, sign-in cookie)
   const { _test: rt } = require('../remote.js');
   assert.ok(rt.isTailscale('100.101.5.9') && rt.isTailscale('::ffff:100.64.0.1') && rt.isTailscale('fd7a:115c:a1e0::1'), 'accepts Tailscale addresses');
