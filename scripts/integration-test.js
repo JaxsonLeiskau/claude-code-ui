@@ -82,6 +82,9 @@ function device(name, port) {
   assert.strictEqual(ccv.turns[1].speaker, 'Claude'); assert.strictEqual(ccv.session.projectId, cp.id);
   const use = (await desk.api('/api/usage')).limits;
   assert.strictEqual(use.five_hour.utilization, 0.25, 'plan usage collected from Claude Code');
+  let fresh = use;
+  for (let i = 0; i < 50 && fresh.seven_day?.utilization !== 0.94; i++) { await sleep(100); fresh = (await desk.api('/api/usage')).limits; }
+  assert.ok(fresh.five_hour.utilization === 0.87 && fresh.seven_day.utilization === 0.94 && /Nov 1/.test(fresh.seven_day.resetText), 'usage numbers come from Claude Code\'s /usage: ' + JSON.stringify(fresh));
   await desk.api('/api/chat', 'POST', { prompt: 'Book it', projectId: cp.id });
   await desk.waitIdle();
   const cpNow = (await desk.api(`/api/projects/${cp.id}`)).project;

@@ -3,6 +3,7 @@
 const fs = require('fs'), path = require('path'), os = require('os'), crypto = require('crypto');
 const a = process.argv.slice(2);
 if (a.includes('--version')) { console.log('0.0.0 (fake)'); process.exit(0); }
+if (a.includes('/usage')) { console.log(JSON.stringify({ type: 'result', is_error: false, result: 'Current session: 87% used · resets Oct 29, 11:09pm (America/Chicago)\nCurrent week (all models): 94% used · resets Nov 1, 10:59am (America/Chicago)' })); process.exit(0); }
 if (a[0] === 'plugin') { console.log('fake claude plugin ' + a.slice(1).join(' ')); process.exit(0); }
 let input = ''; process.stdin.on('data', d => input += d); process.stdin.on('end', () => {
   const out = o => process.stdout.write(JSON.stringify(o) + '\n');

@@ -62,6 +62,24 @@ function parseAttachments(s) {
 const USAGE_FILE = path.join(APP_DIR, 'usage.json');
 let usage = {};
 try { usage = JSON.parse(fs.readFileSync(USAGE_FILE, 'utf8')); } catch {}
+// The same numbers Claude Code's /usage shows (no AI runs, so it costs nothing). Asked every couple of
+// minutes, so usage from other Claude Code sessions shows too, not just chats run from here.
+let usageAsked = 0;
+async function askUsage() {
+  if (Date.now() - usageAsked < 120000) return;
+  usageAsked = Date.now();
+  const r = await runClaudeOnce(['-p', '/usage', '--output-format', 'json'], '', os.homedir());
+  const text = r && typeof r.result === 'string' ? r.result : '';
+  let found = false;
+  for (const [k, re] of [['five_hour', /Current session:\s*(\d+)% used(?:\s*·\s*resets\s+([^\n(]+))?/], ['seven_day', /Current week[^:\n]*:\s*(\d+)% used(?:\s*·\s*resets\s+([^\n(]+))?/]]) {
+    const m = text.match(re);
+    if (!m) continue;
+    const pct = +m[1];
+    usage[k] = { status: pct >= 100 ? 'rejected' : pct >= 80 ? 'allowed_warning' : 'allowed', utilization: pct / 100, resetsAt: null, resetText: m[2] ? m[2].trim() : null, updated: Date.now() };
+    found = true;
+  }
+  if (found) fsp.writeFile(USAGE_FILE, JSON.stringify(usage)).catch(() => {});
+}
 function noteRateLimit(o) {
   const i = o && o.rate_limit_info;
   if (!i || !i.rateLimitType) return;
@@ -1003,6 +1021,7 @@ async function route(req, res) {
   }
 
   if (p === '/api/usage' && m === 'GET') {
+    askUsage().catch(() => {});
     const now = Date.now();
     const limits = {};
     for (const [k, v] of Object.entries(usage)) {

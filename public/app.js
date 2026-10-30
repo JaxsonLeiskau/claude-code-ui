@@ -1893,7 +1893,7 @@ function renderUsage() {
     const text = u.status === 'rejected' ? 'Limit reached' : pct != null ? `${pct}% used` : u.status === 'allowed_warning' ? 'Getting close' : 'Within limit';
     const short = u.status === 'rejected' ? 'Full' : pct != null ? `${pct}%` : u.status === 'allowed_warning' ? 'Close' : 'OK';
     const fill = (pct != null ? Math.max(2, Math.min(100, pct)) : u.status === 'rejected' ? 100 : u.status === 'allowed_warning' ? 80 : 30) / 100;
-    const reset = u.resetsAt ? ` · resets ${when(u.resetsAt)}` : '';
+    const reset = u.resetsAt ? ` · resets ${when(u.resetsAt)}` : u.resetText ? ` · resets ${u.resetText}` : '';
     return `<div class="ub ${level}" title="${esc(long)}: ${esc(text + reset)}${u.usingOverage ? ' (using extra usage)' : ''}">
       <svg class="ub-ring" viewBox="0 0 18 18" width="16" height="16" aria-hidden="true"><circle class="ub-track" cx="9" cy="9" r="${R}"/><circle class="ub-fill" cx="9" cy="9" r="${R}" transform="rotate(-90 9 9)" stroke-dasharray="${C.toFixed(2)}" stroke-dashoffset="${(C * (1 - fill)).toFixed(2)}"/></svg>
       <span class="ub-label">${esc(label)}</span><span class="ub-text">${esc(short)}</span>
