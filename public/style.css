@@ -727,6 +727,14 @@ select.input { appearance: none; -webkit-appearance: none; cursor: pointer; }
 .ub-ring .ub-fill { stroke: var(--ok); stroke-linecap: round; transition: stroke-dashoffset .4s ease; }
 .ub.mid .ub-fill { stroke: #d4a13a; }
 .ub.hi .ub-fill { stroke: var(--danger); }
+/* chat memory: how full this chat's context is */
+.ctx-track { width: 64px; height: 5px; border-radius: 999px; background: var(--border); overflow: hidden; flex: none; }
+.ctx-fill { display: block; height: 100%; border-radius: inherit; background: var(--ok); transition: width .4s ease; }
+.ub.ctx.mid .ctx-fill { background: #d4a13a; }
+.ub.ctx.hi .ctx-fill { background: var(--danger); }
+.ctx-advice { font-weight: 600; }
+.ub.ctx.mid .ctx-advice { color: #b8862a; }
+.ub.ctx.hi .ctx-advice, .ub.ctx.hi .ub-text { color: var(--danger); }
 .ub.hi .ub-text { color: var(--danger); }
 .ub-text { white-space: nowrap; }
 #main.empty .usage-bar { margin-top: 18px; }

@@ -37,22 +37,23 @@ function uploadPath(id) {
 const uploadUrl = fp => fp && fp.startsWith(UPLOADS_DIR + path.sep) ? '/api/uploads/' + path.relative(UPLOADS_DIR, fp).split(path.sep).map(encodeURIComponent).join('/') : null;
 // What Claude Code is told about attached files (it opens them itself with the Read tool)
 const attachBlock = (paths, texts = []) => paths.length ? `\n\n<attachments>\nThe user attached ${paths.length === 1 ? 'this file' : 'these files'}. Open ${paths.length === 1 ? 'it' : 'them'} with the Read tool:\n${paths.map((p, i) => '- ' + p + (texts[i] ? `\n  (The Read tool can't open this kind of file. Read its text instead: ${texts[i]})` : '')).join('\n')}\n</attachments>` : '';
-// Word, PowerPoint and Excel files: their text is saved next to them ("name.docx.txt") the first time it's needed
-const OFFICE_RE = /\.(docx|pptx|xlsx)$/i;
+// Word, PowerPoint, Excel and PDF files: their text is saved next to them ("name.docx.txt") the first time it's needed
+const OFFICE_RE = /\.(docx|pptx|xlsx)$/i, PDF_RE = /\.pdf$/i;
 async function officeTextFile(fp) {
-  if (!OFFICE_RE.test(fp)) return null;
+  if (!OFFICE_RE.test(fp) && !PDF_RE.test(fp)) return null;
   const out = fp + '.txt';
   if (fs.existsSync(out)) return out;
   try {
     if ((await fsp.stat(fp)).size > 300e6) return null;
-    const text = importer.officeText(await fsp.readFile(fp), path.extname(fp));
+    const buf = await fsp.readFile(fp);
+    const text = PDF_RE.test(fp) ? importer.pdfText(buf) : importer.officeText(buf, path.extname(fp));
     if (!text.trim()) return null;
     await fsp.writeFile(out, `(The text of "${path.basename(fp)}", taken out of the file by Roundtable. Pictures and formatting aren't included.)\n\n${text}\n`);
     return out;
   } catch { return null; }
 }
 // what Claude gets to open: the text version in place of a file its reader can't handle
-const readablePaths = paths => Promise.all(paths.map(async p => (await officeTextFile(p)) || p));
+const readablePaths = paths => Promise.all(paths.map(async p => (OFFICE_RE.test(p) && await officeTextFile(p)) || p)); // Claude opens PDFs itself
 function parseAttachments(s) {
   const m = typeof s === 'string' && s.match(/<attachments>([\s\S]*?)<\/attachments>/);
   if (!m) return [];
@@ -68,7 +69,7 @@ let usageAsked = 0;
 async function askUsage() {
   if (Date.now() - usageAsked < 120000) return;
   usageAsked = Date.now();
-  const r = await runClaudeOnce(['-p', '/usage', '--output-format', 'json'], '', os.homedir());
+  const r = await runClaudeOnce(['-p', '/usage', '--output-format', 'json', '--no-session-persistence'], '', os.homedir());
   const text = r && typeof r.result === 'string' ? r.result : '';
   let found = false;
   for (const [k, re] of [['five_hour', /Current session:\s*(\d+)% used(?:\s*·\s*resets\s+([^\n(]+))?/], ['seven_day', /Current week[^:\n]*:\s*(\d+)% used(?:\s*·\s*resets\s+([^\n(]+))?/]]) {
@@ -632,7 +633,7 @@ async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowed
     if (needs) input = (await buildContext(project, sessionId)) + '\n\n' + prompt;
     args.push('--add-dir', projDir(project.id));
   }
-  if (attachments.length) { input += attachBlock(attachments, await Promise.all(attachments.map(officeTextFile))); args.push('--add-dir', UPLOADS_DIR); }
+  if (attachments.length) { input += attachBlock(attachments, await Promise.all(attachments.map(p => OFFICE_RE.test(p) ? officeTextFile(p) : null))); args.push('--add-dir', UPLOADS_DIR); }
   runs.set(run.id, run);
   pushEvent(run, { kind: 'start', runId: run.id, sessionId: run.sessionId });
   pushEvent(run, { kind: 'user', text: prompt, attachments: attachments.map(p => ({ name: path.basename(p), url: uploadUrl(p), image: IMG_RE.test(p) })) });
@@ -655,6 +656,7 @@ async function startRun({ sessionId, prompt, cwd, model, permissionMode, allowed
       let o; try { o = JSON.parse(line); } catch { pushEvent(run, { kind: 'stderr', text: line + '\n' }); continue; }
       if (o.type === 'system' && o.subtype === 'init') commands.noteInit(run.cwd, o);
       if (o.type === 'rate_limit_event') noteRateLimit(o);
+      if (o.type === 'result' && run.sessionId && ctxWindowOf(o)) { meta.sessions[run.sessionId] = { ...(meta.sessions[run.sessionId] || {}), ctxWindow: ctxWindowOf(o) }; saveMeta(); }
       if (o.type === 'system' && o.subtype === 'init' && o.session_id) {
         if (!run.sessionId && run.projectId) { meta.sessions[o.session_id] = { ...(meta.sessions[o.session_id] || {}), projectId: run.projectId }; saveMeta(); }
         run.sessionId = o.session_id;
@@ -773,7 +775,7 @@ async function earlierChatsText(project, excludeId) {
 }
 
 // Chat-API message content: text, plus images as data URLs and small text files inline
-async function apiContent(text, atts) {
+async function apiContent(text, atts, pdfFiles = false) {
   if (!atts || !atts.length) return text;
   const parts = [];
   let extra = '', tf;
@@ -786,13 +788,16 @@ async function apiContent(text, atts) {
       parts.push({ type: 'image_url', image_url: { url: `data:image/${ext};base64,${(await fsp.readFile(fp)).toString('base64')}` } });
     } else if (TEXTLIKE_RE.test(fp) && st.size <= 200000) {
       extra += `\n\n<file name="${a.name}">\n${await fsp.readFile(fp, 'utf8')}\n</file>`;
-    } else if (OFFICE_RE.test(fp) && (tf = await officeTextFile(fp))) {
+    } else if (pdfFiles && PDF_RE.test(fp) && st.size <= 30e6) {
+      parts.push({ type: 'file', file: { filename: a.name, file_data: `data:application/pdf;base64,${(await fsp.readFile(fp)).toString('base64')}` } });
+    } else if ((OFFICE_RE.test(fp) || PDF_RE.test(fp)) && (tf = await officeTextFile(fp))) {
       let t = await fsp.readFile(tf, 'utf8');
       if (t.length > 200000) t = t.slice(0, 200000) + '\n\n(Cut off here: the rest is too long to send.)';
       extra += `\n\n<file name="${a.name}">\n${t}\n</file>`;
-    } else extra += `\n\n(The user attached "${a.name}", which can't be shown to this model.)`;
+    } else if (PDF_RE.test(fp)) extra += `\n\n(The user attached the PDF "${a.name}", but it has no text Roundtable can read, probably scanned pages. Ask them to paste the text or send pictures of the pages.)`;
+    else extra += `\n\n(The user attached "${a.name}", which can't be shown to this model.)`;
   }
-  const body = (text || (parts.length ? 'Please look at the attached image.' : '')) + extra;
+  const body = (text || (parts.length ? 'Please look at the attachment.' : '')) + extra;
   return parts.length ? [{ type: 'text', text: body }, ...parts] : body;
 }
 
@@ -813,11 +818,15 @@ async function startAppRun({ chat, prompt, attachments = [] }) {
     if (i >= 0) run.events[i] = ev; else run.events.push(ev);
     for (const l of run.listeners) l(ev);
   };
-  const history = [];
-  for (const m of chat.messages) {
-    if (m.role === 'user') history.push({ role: 'user', content: await apiContent(m.text, m.attachments) });
-    else if (m.text) history.push({ role: 'assistant', content: m.text });
-  }
+  const historyFor = async pdfFiles => {
+    const h = [];
+    for (const m of chat.messages) {
+      if (m.role === 'user') h.push({ role: 'user', content: await apiContent(m.text, m.attachments, pdfFiles) });
+      else if (m.text) h.push({ role: 'assistant', content: m.text });
+    }
+    return h;
+  };
+  const history = await historyFor(false);
   const started = Date.now();
   chat.messages.push({ role: 'user', text: prompt, ts: new Date().toISOString(), ...(atts.length ? { attachments: atts } : {}) });
   if (!chat.title || chat.messages.filter(m => m.role === 'user').length === 1) chat.title = (prompt || atts.map(a => a.name).join(', ')).replace(/\s+/g, ' ').trim().slice(0, 100);
@@ -839,20 +848,28 @@ async function startAppRun({ chat, prompt, attachments = [] }) {
       } else {
         const speaker = ai.providerName(chat.provider);
         let last = 0;
-        const msgs = [...(context ? [{ role: 'system', content: context }] : []), ...history, { role: 'user', content: await apiContent(prompt, atts) }];
+        // ChatGPT reads PDFs itself (pictures and scans too); the others get their text
+        const pdfFiles = chat.kind === 'model' && chat.provider === 'openai';
+        const build = async files => [...(context ? [{ role: 'system', content: context }] : []), ...(files ? await historyFor(true) : history), { role: 'user', content: await apiContent(prompt, atts, files) }];
+        const msgs = await build(pdfFiles);
         reply.speaker = speaker;
         const extra = {};
         if (chat.provider === 'claude') {
           // plain Claude chats keep a Claude Code session of their own (only on the computer that made it)
           const resume = chat.cliSession && await findSessionFile(chat.cliSession) ? chat.cliSession : null;
-          extra.chat = { resume, onSession: id => { chat.cliSession = id; } };
+          extra.chat = { resume, onSession: id => { chat.cliSession = id; }, onContext: c => { chat.context = c; } };
           extra.attachments = await readablePaths(attachments);
         }
-        reply.text = await ai.complete(chat.provider, msgs, {
+        const call = m => ai.complete(chat.provider, m, {
           ...extra,
           signal: run.abort.signal,
           onText: (_, full) => { const now = Date.now(); if (now - last > 80) { last = now; snap({ role: 'assistant', speaker, blocks: [{ type: 'text', text: full, draft: true }] }); } },
         });
+        try { reply.text = await call(msgs); }
+        catch (e) {
+          if (!pdfFiles || e.name === 'AbortError' || !JSON.stringify(msgs).includes('"type":"file"')) throw e;
+          reply.text = await call(await build(false)); // this model won't take PDF files: send their text instead
+        }
       }
       run.replyText = reply.text;
     } catch (e) {
@@ -865,9 +882,43 @@ async function startAppRun({ chat, prompt, attachments = [] }) {
     await saveChat(chat).catch(() => {});
     const t = chatTurns({ messages: [reply] })[0];
     if (t && (reply.text || reply.error || reply.debate)) snap(t);
+    const ctx = appChatContext(chat, context);
+    if (ctx) pushEvent(run, { kind: 'context', ...ctx });
     finishRun(run, reply.error ? 1 : 0);
   })();
   return run;
+}
+
+/* ---------------- how full a chat's memory (context window) is ---------------- */
+// tokens in Claude's memory after a reply: everything it was sent plus what it wrote
+const ctxUsed = u => u ? (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.output_tokens || 0) : 0;
+const ctxWindowOf = o => Math.max(0, ...Object.values((o && o.modelUsage) || {}).map(m => (m && m.contextWindow) || 0));
+// shortcut: chats Roundtable never saw a size for count as 200k, or 1M once they're past 200k
+const guessWindow = used => used > 200000 ? 1000000 : 200000;
+async function claudeContext(file, id) {
+  let fh;
+  try {
+    fh = await fsp.open(file, 'r');
+    const { size } = await fh.stat();
+    const len = Math.min(size, 1024 * 1024), buf = Buffer.alloc(len);
+    await fh.read(buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"usage"')) continue;
+      let o; try { o = JSON.parse(lines[i]); } catch { continue; }
+      if (o.type !== 'assistant' || o.isSidechain || !o.message || !o.message.usage) continue;
+      const used = ctxUsed(o.message.usage);
+      return used ? { used, window: (meta.sessions[id] || {}).ctxWindow || guessWindow(used) } : null;
+    }
+  } catch {} finally { if (fh) await fh.close().catch(() => {}); }
+  return null;
+}
+// Plain Claude chats: Claude Code's own numbers. Other AIs: an estimate (about 4 characters a token).
+function appChatContext(chat, contextText = '') {
+  if (chat.provider === 'claude' && chat.context) return chat.context;
+  if (chat.kind !== 'model' || chat.provider === 'claude') return null;
+  const chars = String(contextText || '').length + chat.messages.reduce((n, m) => n + (m.text || '').length, 0);
+  return { used: Math.round(chars / 4), window: 128000, estimate: true }; // shortcut: 128k fits most models; a per-model size if it matters
 }
 
 /* ---------------- http ---------------- */
@@ -1104,7 +1155,7 @@ async function route(req, res) {
         const msgs = run ? chat.messages.slice(0, -1) : chat.messages; // the running turn arrives live
         return send(res, 200, {
           session: { id, kind: chat.kind, provider: chat.provider, title: chat.title, pinned: !!chat.pinned, projectId: chat.projectId && store.projects[chat.projectId] ? chat.projectId : null, cwd: null },
-          turns: chatTurns({ messages: msgs }), run: run ? { id: run.id } : null,
+          turns: chatTurns({ messages: msgs }), run: run ? { id: run.id } : null, context: appChatContext(chat),
         });
       }
       if (m === 'PATCH') {
@@ -1135,7 +1186,7 @@ async function route(req, res) {
       const info = await scanFile({ file, projectDir: path.basename(path.dirname(file)) });
       const run = activeRunFor(id);
       const turns = await loadTurns(file, run ? run.startSize : undefined);
-      return send(res, 200, { session: info ? decorate(info) : { id, title: 'Untitled', cwd: null }, turns, run: run ? { id: run.id } : null });
+      return send(res, 200, { session: info ? decorate(info) : { id, title: 'Untitled', cwd: null }, turns, run: run ? { id: run.id } : null, context: await claudeContext(file, id) });
     }
     if (m === 'PATCH') {
       const body = await readBody(req);
@@ -1427,6 +1478,28 @@ function start(port = PORT, triesLeft = 10) {
 
 function stopAll() { for (const r of runs.values()) stopRun(r); }
 
+// 1.10.1 saved every usage check as a chat ("/usage" piling up in the sidebar): move those to the trash once
+async function trashUsageChecks() {
+  const dest = path.join(TRASH_DIR, 'usage-checks');
+  let moved = 0;
+  for (const dir of await fsp.readdir(PROJECTS_DIR).catch(() => [])) {
+    for (const n of await fsp.readdir(path.join(PROJECTS_DIR, dir)).catch(() => [])) {
+      if (!n.endsWith('.jsonl')) continue;
+      const f = path.join(PROJECTS_DIR, dir, n);
+      try {
+        if ((await fsp.stat(f)).size > 100000) continue;
+        const text = await fsp.readFile(f, 'utf8');
+        if (!text.includes('command-name>/usage') || text.includes('"type":"assistant"')) continue;
+        await fsp.mkdir(dest, { recursive: true });
+        await fsp.rename(f, path.join(dest, n));
+        if (sync) await sync.recordDeletion('claude', n.slice(0, -6)); // so sync removes it everywhere instead of bringing it back
+        moved++;
+      } catch {}
+    }
+  }
+  if (moved) { scanCache.clear(); idToFile.clear(); }
+  return moved;
+}
 sync = require('./sync');
 sync.init({
   APP_DIR, PROJECTS_DIR, PROJ_ROOT, CHATS_DIR,
@@ -1435,6 +1508,7 @@ sync.init({
   busyIds: () => new Set([...runs.values()].filter(r => !r.done && r.sessionId).map(r => r.sessionId)),
   onIncoming: () => { scanCache.clear(); idToFile.clear(); },
 });
+trashUsageChecks().catch(() => {});
 
 let appHooks = {};
 /** Used by the desktop app to report its version and update status. */
@@ -1443,7 +1517,7 @@ function setAppHooks(h) { appHooks = h || {}; }
 const remote = require('./remote');
 remote.init({ APP_DIR, PUBLIC_DIR, route, send, serveStatic });
 
-module.exports = { isRemoteEnabled: () => remote.isEnabled(), start, stopAll, setAppHooks, _internal: { officeTextFile, apiContent, attachBlock, buildContext, getProject, listSessions, store, translateHome, folderHere, sameNameFolders } };
+module.exports = { isRemoteEnabled: () => remote.isEnabled(), start, stopAll, setAppHooks, _internal: { trashUsageChecks, officeTextFile, apiContent, attachBlock, buildContext, getProject, listSessions, store, translateHome, folderHere, sameNameFolders } };
 
 // Run directly (`node server.js`): serve and open the default browser.
 if (require.main === module) {

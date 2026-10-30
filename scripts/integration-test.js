@@ -80,6 +80,7 @@ function device(name, port) {
   await desk.waitIdle();
   const ccv = await desk.api(`/api/sessions/${cc1.sessionId}`);
   assert.strictEqual(ccv.turns[1].speaker, 'Claude'); assert.strictEqual(ccv.session.projectId, cp.id);
+  assert.deepStrictEqual(ccv.context, { used: 1230, window: 200000 }, 'plain Claude chats report their memory from Claude Code');
   const use = (await desk.api('/api/usage')).limits;
   assert.strictEqual(use.five_hour.utilization, 0.25, 'plan usage collected from Claude Code');
   let fresh = use;
@@ -98,6 +99,42 @@ function device(name, port) {
   assert.strictEqual((await desk.api('/api/sessions')).projects.find(p => p.id === cp.id).group, 'School', 'projects can be put in a group');
   for (const s of (await desk.api('/api/sessions')).sessions.filter(s => s.projectId === cp.id)) await desk.api(`/api/sessions/${s.id}`, 'DELETE');
   await desk.api(`/api/projects/${cp.id}`, 'DELETE');
+
+
+  // a tiny PDF: one plain line, one line in a font with a ToUnicode map (codes 1,2 -> W,X), one compressed page
+  const makePdf = () => {
+    const zlibm = require('zlib');
+    const cmap = '/CIDInit /ProcSet findresource begin\nbegincmap\n1 begincodespacerange <0000> <FFFF> endcodespacerange\n2 beginbfchar <0001> <0057> <0002> <0058> endbfchar\nendcmap';
+    const page1 = 'BT /F1 12 Tf 72 700 Td (Lab 7 \\(IPsec\\)) Tj ET\nBT /F2 12 Tf 72 680 Td <00010002> Tj ET';
+    const page2 = zlibm.deflateSync(Buffer.from('BT /F1 12 Tf 72 700 Td [(Hi) -300 (there)] TJ ET'));
+    const objs = [
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>',
+      '<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>',
+      '<< /Length ' + page1.length + ' >>\nstream\n' + page1 + '\nendstream',
+      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+      '<< /Type /Font /Subtype /Type0 /Encoding /Identity-H /ToUnicode 7 0 R >>',
+      '<< /Length ' + cmap.length + ' >>\nstream\n' + cmap + '\nendstream',
+      '<< /Type /Page /Parent 2 0 R /Contents 9 0 R >>',
+      null,
+    ];
+    const chunks = [Buffer.from('%PDF-1.4\n')];
+    objs.forEach((o, i) => chunks.push(o ? Buffer.from((i + 1) + ' 0 obj\n' + o + '\nendobj\n') : Buffer.concat([Buffer.from((i + 1) + ' 0 obj\n<< /Length ' + page2.length + ' /Filter /FlateDecode >>\nstream\n'), page2, Buffer.from('\nendstream\nendobj\n')])));
+    chunks.push(Buffer.from('trailer\n<< /Root 1 0 R >>\n%%EOF\n'));
+    return Buffer.concat(chunks);
+  };
+
+  // PDFs: ChatGPT gets the file itself, Gemini gets its text; both report how full the chat is
+  const pdfUp = await desk.api('/api/uploads', 'POST', { name: 'Lab 7.pdf', data: makePdf().toString('base64') });
+  const gp = await desk.api('/api/chat', 'POST', { kind: 'model', provider: 'openai', prompt: 'Summarize', attachments: [pdfUp.id] });
+  await desk.waitIdle();
+  const gpv = await desk.api('/api/sessions/' + gp.sessionId);
+  assert.strictEqual(gpv.turns[1].blocks[0].text, 'ChatGPT got the PDF file.', 'ChatGPT receives the PDF itself');
+  assert.ok(gpv.context && gpv.context.estimate && gpv.context.window === 128000 && gpv.context.used > 0, 'other AIs get an estimated chat memory: ' + JSON.stringify(gpv.context));
+  const gm = await desk.api('/api/chat', 'POST', { kind: 'model', provider: 'gemini', prompt: 'Summarize', attachments: [pdfUp.id] });
+  await desk.waitIdle();
+  assert.strictEqual((await desk.api('/api/sessions/' + gm.sessionId)).turns[1].blocks[0].text, 'Gemini read the PDF text.', 'Gemini receives the PDF\'s text');
+  for (const sid of [gp.sessionId, gm.sessionId]) await desk.api('/api/sessions/' + sid, 'DELETE');
 
   // "/plugin …" runs through Claude Code's command line (its menu needs a terminal)
   const pl = await desk.api('/api/plugin', 'POST', { args: 'marketplace add DietrichGebert/ponytail' });

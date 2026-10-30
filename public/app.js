@@ -964,7 +964,7 @@ async function openSession(id) {
     toast(e.message); go(null); return;
   }
   if (token !== S.viewToken) return;
-  Object.assign(S.view, { cwd: d.session.cwd, title: d.session.title, pinned: d.session.pinned, projectId: d.session.projectId, kind: d.session.kind || 'claude', provider: d.session.provider || null, turns: d.turns, loading: false });
+  Object.assign(S.view, { cwd: d.session.cwd, title: d.session.title, pinned: d.session.pinned, projectId: d.session.projectId, kind: d.session.kind || 'claude', provider: d.session.provider || null, turns: d.turns, loading: false, ctx: d.context || null });
   renderAll();
   scrollToBottom(true);
   if (d.run) attach(d.run.id, token);
@@ -1046,6 +1046,7 @@ function handleEvent(ev) {
       if (ev.turn.result) t.result = ev.turn.result;
       break;
     }
+    case 'context': v.ctx = { used: ev.used, window: ev.window, estimate: ev.estimate }; renderUsage(); break;
     case 'stderr': v.stderr = ((v.stderr || '') + ev.text).slice(-4000); break;
     case 'error': v.turns.push({ role: 'notice', kind: 'error', text: ev.text }); markDirty(v.turns.length - 1); break;
     case 'exit': {
@@ -1071,6 +1072,15 @@ function handleEvent(ev) {
 
 function handleClaude(o) {
   const v = S.view;
+  // chat memory: tokens after each of Claude's steps; the chat's full size arrives with the result
+  if (o.type === 'assistant' && o.message && o.message.usage && !o.parent_tool_use_id) {
+    const u = o.message.usage, used = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.output_tokens || 0);
+    if (used) { v.ctx = { used, window: (v.ctx && !v.ctx.estimate && v.ctx.window) || (used > 200000 ? 1e6 : 2e5) }; renderUsage(); }
+  }
+  if (o.type === 'result' && v.ctx) {
+    const w = Math.max(0, ...Object.values(o.modelUsage || {}).map(m => (m && m.contextWindow) || 0));
+    if (w) { v.ctx.window = w; renderUsage(); }
+  }
   if (o.type === 'system' && o.subtype === 'init') {
     if (o.session_id && v.id !== o.session_id) {
       const wasNew = !v.id;
@@ -1876,8 +1886,9 @@ function usageApplies() {
 }
 function renderUsage() {
   const el = $('#usageBar'), L = S.usage || {};
-  const rows = [['five_hour', 'Session', 'Current session'], ['seven_day', 'Week', 'This week']].filter(([k]) => L[k]);
-  el.hidden = !rows.length || !usageApplies();
+  const rows = usageApplies() ? [['five_hour', 'Session', 'Current session'], ['seven_day', 'Week', 'This week']].filter(([k]) => L[k]) : [];
+  const v = S.view, ctx = v && v.id && v.mode !== 'project' && v.ctx;
+  el.hidden = !rows.length && !ctx;
   if (el.hidden) return;
   const when = ms => {
     if (!ms) return '';
@@ -1898,7 +1909,18 @@ function renderUsage() {
       <svg class="ub-ring" viewBox="0 0 18 18" width="16" height="16" aria-hidden="true"><circle class="ub-track" cx="9" cy="9" r="${R}"/><circle class="ub-fill" cx="9" cy="9" r="${R}" transform="rotate(-90 9 9)" stroke-dasharray="${C.toFixed(2)}" stroke-dashoffset="${(C * (1 - fill)).toFixed(2)}"/></svg>
       <span class="ub-label">${esc(label)}</span><span class="ub-text">${esc(short)}</span>
     </div>`;
-  }).join('');
+  }).join('') + (ctx ? memoryBar(ctx) : '');
+}
+// How full this chat's memory is, and when it's time for a new chat
+function memoryBar(ctx) {
+  const pct = Math.min(100, Math.round(ctx.used / ctx.window * 100));
+  const level = pct >= 95 ? 'hi' : pct >= 80 ? 'mid' : 'lo';
+  const k = n => n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : Math.round(n / 1000) + 'k';
+  const advice = pct >= 95 ? 'Full: start a new chat' : pct >= 80 ? 'Getting full: start a new chat soon' : '';
+  const tip = `Chat memory: ${ctx.estimate ? 'about ' : ''}${k(ctx.used)} of ${k(ctx.window)} tokens (${pct}%).${pct >= 80 ? ' When it fills up, older messages get summarized or forgotten. A new chat starts fresh; in a project it can still read this one.' : ''}`;
+  return `<div class="ub ctx ${level}" title="${esc(tip)}">
+    <span class="ub-label">Chat memory</span><span class="ctx-track"><span class="ctx-fill" style="width:${Math.max(2, pct)}%"></span></span><span class="ub-text">${ctx.estimate ? '~' : ''}${pct}%</span>${advice ? `<span class="ctx-advice">${esc(advice)}</span>` : ''}
+  </div>`;
 }
 
 /* ---------------- "/" menu: skills, commands, plugins ---------------- */

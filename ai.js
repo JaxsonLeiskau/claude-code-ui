@@ -246,7 +246,7 @@ function claudeCompletion(messages, { onText, signal, attachments = [], chat = n
     for (const d of new Set(attachments.map(a => path.dirname(a)))) args.push('--add-dir', d);
     let proc;
     try { proc = deps.spawnClaude(args, { cwd: dir, env: process.env }); } catch (e) { return reject(e); }
-    let text = '', buf = '', err = '', final = null, settled = false;
+    let text = '', buf = '', err = '', final = null, settled = false, lastUsage = null;
     const done = (e, v) => { if (settled) return; settled = true; e ? reject(e) : resolve(v); };
     if (signal) signal.addEventListener('abort', () => { try { proc.kill(); } catch {} done(Object.assign(new Error('Stopped'), { name: 'AbortError' })); });
     proc.stdout.setEncoding('utf8');
@@ -261,6 +261,7 @@ function claudeCompletion(messages, { onText, signal, attachments = [], chat = n
         if (o.type === 'stream_event' && o.event && o.event.type === 'content_block_delta' && o.event.delta && o.event.delta.type === 'text_delta') {
           text += o.event.delta.text || ''; if (onText) onText(o.event.delta.text || '', text);
         } else if (o.type === 'result') final = o;
+        if (o.type === 'assistant' && o.message && o.message.usage && !o.parent_tool_use_id) lastUsage = o.message.usage;
       }
     });
     proc.stderr.on('data', d => { err += d; });
@@ -269,6 +270,10 @@ function claudeCompletion(messages, { onText, signal, attachments = [], chat = n
       if (final && final.is_error) return done(new Error(String(final.result || 'Claude reported an error').slice(0, 300)));
       if (!text && final && typeof final.result === 'string') text = final.result;
       if (!text) return done(new Error((err.trim().split('\n').pop() || 'Claude gave no answer').slice(0, 300)));
+      // how full this chat's memory is, for the bar under the message box
+      const u = lastUsage || (final && final.usage), used = u ? (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.output_tokens || 0) : 0;
+      const win = Math.max(0, ...Object.values((final && final.modelUsage) || {}).map(m => (m && m.contextWindow) || 0));
+      if (used && chat && chat.onContext) chat.onContext({ used, window: win || (used > 200000 ? 1000000 : 200000) });
       done(null, text);
     });
     proc.stdin.on('error', () => {});

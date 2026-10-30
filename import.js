@@ -131,6 +131,171 @@ function officeText(buf, ext) {
   return text.length > 2e6 ? text.slice(0, 2e6) + '\n\n(The rest of the file was cut off because it is so long.)' : text;
 }
 
+/* ---------------- text from PDFs (for the AIs that can't open them) ---------------- */
+// shortcut: text-based PDFs only (no OCR, so scans give ''), no encrypted PDFs; fonts without a
+// ToUnicode map are read as plain Latin-1, which is right for most simple fonts. Swap for a real
+// PDF library if some PDFs come out garbled.
+function pdfObjects(src) {
+  const objs = new Map();
+  const add = (num, body) => {
+    const sm = body.match(/\bstream\r?\n/);
+    if (!sm) { objs.set(num, { dict: body, data: null }); return; }
+    const dict = body.slice(0, sm.index);
+    const end = body.lastIndexOf('endstream');
+    let raw = Buffer.from(body.slice(sm.index + sm[0].length, end < 0 ? body.length : end).replace(/\r?\n$/, ''), 'latin1');
+    if (/\/FlateDecode/.test(dict)) {
+      try { raw = zlib.inflateSync(raw); } catch { try { raw = zlib.inflateSync(raw, { finishFlush: zlib.constants.Z_SYNC_FLUSH }); } catch { raw = null; } }
+    } else if (/\/Filter/.test(dict)) raw = null; // pictures and other encodings: not text
+    objs.set(num, { dict, data: raw });
+  };
+  const re = /(\d+)\s+\d+\s+obj\b/g;
+  let m, prev = null;
+  while ((m = re.exec(src))) {
+    if (prev) add(prev.num, src.slice(prev.at, m.index).replace(/endobj\s*$/, ''));
+    prev = { num: +m[1], at: m.index + m[0].length };
+    // skip over stream data so "N 0 obj" inside binary can't split an object
+    const sm = /\bstream\r?\n/g; sm.lastIndex = re.lastIndex;
+    const nextObj = src.slice(re.lastIndex, re.lastIndex + 4000).search(/\bendobj\b|\bstream\r?\n/);
+    if (nextObj >= 0 && /^stream/.test(src.slice(re.lastIndex + nextObj, re.lastIndex + nextObj + 6))) {
+      const e = src.indexOf('endstream', re.lastIndex + nextObj);
+      if (e > 0) re.lastIndex = e;
+    }
+  }
+  if (prev) add(prev.num, src.slice(prev.at).replace(/endobj[\s\S]*$/, ''));
+  // objects packed inside object streams (most PDFs made by Word)
+  for (const o of [...objs.values()]) {
+    if (!o.data || !/\/Type\s*\/ObjStm/.test(o.dict)) continue;
+    const first = +(o.dict.match(/\/First\s+(\d+)/) || [])[1], text = o.data.toString('latin1');
+    const nums = text.slice(0, first).trim().split(/\s+/).map(Number);
+    for (let i = 0; i + 1 < nums.length; i += 2) {
+      const end = i + 3 < nums.length ? nums[i + 3] : text.length - first;
+      if (!objs.has(nums[i])) objs.set(nums[i], { dict: text.slice(first + nums[i + 1], first + end), data: null });
+    }
+  }
+  return objs;
+}
+function pdfText(buf) {
+  const src = buf.toString('latin1');
+  if (/\/Encrypt\s/.test(src)) return '';
+  const objs = pdfObjects(src);
+  const get = v => { const r = typeof v === 'string' && v.match(/^\s*(\d+)\s+\d+\s+R/); return r ? objs.get(+r[1]) || null : null; };
+  // a key's value in a dictionary: "5 0 R", "<<…>>", "[…]" (nesting counted) or a plain token
+  const val = (dict, key) => {
+    const i = dict.search(new RegExp(`/${key}(?![A-Za-z0-9])`));
+    if (i < 0) return null;
+    const s = dict.slice(i + key.length + 1).trimStart();
+    const ref = s.match(/^\d+\s+\d+\s+R/); if (ref) return ref[0];
+    const open = s.startsWith('<<') ? '<<' : s[0] === '[' ? '[' : null;
+    if (!open) return (s.match(/^[^\s/>\]]+/) || [''])[0];
+    const close = open === '<<' ? '>>' : ']';
+    for (let j = 0, depth = 0; j < s.length; j++) {
+      if (s.startsWith(open, j)) { depth++; j += open.length - 1; }
+      else if (s.startsWith(close, j)) { depth--; j += close.length - 1; if (!depth) return s.slice(0, j + 1); }
+    }
+    return s;
+  };
+  const dictOf = v => { if (!v) return ''; const o = get(v); return o ? o.dict : v; };
+  // ToUnicode maps: glyph code -> text
+  const cmaps = new Map();
+  const u16 = h => { let s = ''; for (let i = 0; i < h.length; i += 4) s += String.fromCharCode(parseInt(h.slice(i, i + 4).padEnd(4, '0'), 16)); return s; };
+  const cmapFor = fontDict => {
+    const ref = val(fontDict, 'ToUnicode'), o = get(ref);
+    if (!o || !o.data) return /Identity-H/.test(fontDict) ? { map: new Map(), bytes: 2 } : null;
+    if (cmaps.has(ref)) return cmaps.get(ref);
+    const t = o.data.toString('latin1'), map = new Map();
+    const cs = t.match(/begincodespacerange\s*<([0-9a-fA-F]+)>/);
+    for (const b of t.matchAll(/beginbfchar([\s\S]*?)endbfchar/g)) for (const p of b[1].matchAll(/<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]*)>/g)) map.set(parseInt(p[1], 16), u16(p[2]));
+    for (const b of t.matchAll(/beginbfrange([\s\S]*?)endbfrange/g)) for (const p of b[1].matchAll(/<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*(<[0-9a-fA-F]*>|\[[^\]]*\])/g)) {
+      const lo = parseInt(p[1], 16), hi = parseInt(p[2], 16);
+      if (p[3][0] === '[') [...p[3].matchAll(/<([0-9a-fA-F]*)>/g)].forEach((d, k) => map.set(lo + k, u16(d[1])));
+      else { const d = p[3].slice(1, -1), base = parseInt(d.slice(-4) || '0', 16), pre = u16(d.slice(0, -4)); for (let c = lo; c <= hi && c - lo < 65536; c++) map.set(c, pre + String.fromCharCode(base + c - lo)); }
+    }
+    const cm = { map, bytes: cs ? Math.max(1, cs[1].length / 2) : (/Identity-H/.test(fontDict) ? 2 : 1) };
+    cmaps.set(ref, cm);
+    return cm;
+  };
+  const decode = (bytes, font) => {
+    if (!font) return Buffer.from(bytes).toString('latin1');
+    let s = '';
+    for (let i = 0; i + font.bytes <= bytes.length; i += font.bytes) {
+      const code = font.bytes === 2 ? bytes[i] << 8 | bytes[i + 1] : bytes[i];
+      s += font.map.get(code) ?? (font.bytes === 1 ? String.fromCharCode(code) : '');
+    }
+    return s;
+  };
+  // pages in reading order, with the resources (fonts) each one inherits
+  const rootRef = (src.match(/\/Root\s+(\d+\s+\d+\s+R)/) || [])[1];
+  const pages = [];
+  const walk = (dict, inherited, depth) => {
+    if (depth > 40) return;
+    const res = val(dict, 'Resources') || inherited;
+    if (/\/Type\s*\/Page(?!s)/.test(dict)) pages.push({ dict, res });
+    const kids = val(dict, 'Kids');
+    if (kids) for (const r of kids.matchAll(/(\d+)\s+\d+\s+R/g)) { const k = objs.get(+r[1]); if (k) walk(k.dict, res, depth + 1); }
+  };
+  const pagesRoot = rootRef ? dictOf(val(dictOf(rootRef), 'Pages')) : '';
+  if (pagesRoot) walk(pagesRoot, null, 0);
+  if (!pages.length) for (const o of objs.values()) if (/\/Type\s*\/Page(?!s)/.test(o.dict)) pages.push({ dict: o.dict, res: val(o.dict, 'Resources') });
+  const out = [];
+  for (const pg of pages) {
+    const fonts = {};
+    for (const f of dictOf(val(dictOf(pg.res), 'Font')).matchAll(/\/([^\s/<>[\]()]+)\s+(\d+\s+\d+\s+R)/g)) { const fo = get(f[2]); if (fo) fonts[f[1]] = cmapFor(fo.dict); }
+    const parts = [...(val(pg.dict, 'Contents') || '').matchAll(/(\d+)\s+\d+\s+R/g)].map(r => (objs.get(+r[1]) || {}).data).filter(Boolean);
+    out.push(pdfContentText(Buffer.concat(parts.flatMap(b => [b, Buffer.from('\n')])), fonts, decode));
+  }
+  return out.map(t => t.replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim()).filter(Boolean).join('\n\n').slice(0, 2e6);
+}
+// Reads the text operators (Tj, TJ, ', ") of a page and where the lines break
+function pdfContentText(data, fonts, decode) {
+  let i = 0, out = '', font = null, lastY = null;
+  const stack = [], n = data.length;
+  const ws = c => c === 32 || c === 10 || c === 13 || c === 9 || c === 12 || c === 0;
+  const str = () => {
+    const b = []; let depth = 1; i++;
+    while (i < n && depth) {
+      let c = data[i++];
+      if (c === 92) {
+        c = data[i++];
+        const esc = { 110: 10, 114: 13, 116: 9, 98: 8, 102: 12 }[c];
+        if (esc !== undefined) b.push(esc);
+        else if (c >= 48 && c <= 55) { let o = c - 48; for (let k = 0; k < 2 && data[i] >= 48 && data[i] <= 55; k++) o = o * 8 + data[i++] - 48; b.push(o & 255); }
+        else if (c === 13 || c === 10) { if (c === 13 && data[i] === 10) i++; }
+        else b.push(c);
+      } else if (c === 40) { depth++; b.push(c); }
+      else if (c === 41) { if (--depth) b.push(c); }
+      else b.push(c);
+    }
+    return { bytes: b };
+  };
+  const hex = () => { i++; let h = ''; while (i < n && data[i] !== 62) h += String.fromCharCode(data[i++]); i++; h = h.replace(/[^0-9a-fA-F]/g, ''); if (h.length % 2) h += '0'; return { bytes: [...Buffer.from(h, 'hex')] }; };
+  const show = s => { if (s && s.bytes) out += decode(s.bytes, font); };
+  const top = k => stack[stack.length - k];
+  while (i < n) {
+    const c = data[i];
+    if (ws(c)) { i++; continue; }
+    if (c === 37) { while (i < n && data[i] !== 10 && data[i] !== 13) i++; continue; }
+    if (c === 40) { stack.push(str()); continue; }
+    if (c === 60 && data[i + 1] !== 60) { stack.push(hex()); continue; }
+    if (c === 91) { stack.push('['); i++; continue; }
+    if (c === 93) { const arr = []; while (stack.length && top(1) !== '[') arr.unshift(stack.pop()); stack.pop(); stack.push(arr); i++; continue; }
+    let j = i + 1;
+    while (j < n && !ws(data[j]) && ![37, 40, 41, 47, 60, 62, 91, 93, 123, 125].includes(data[j])) j++;
+    const tok = data.toString('latin1', i, j); i = j;
+    if (/^[/\-+.\d]/.test(tok) || '<>{}'.includes(tok)) { stack.push(tok); continue; }
+    if (tok === 'BI') { const e = data.indexOf('EI', i); i = e < 0 ? n : e + 2; stack.length = 0; continue; } // inline picture
+    if (tok === 'Tf') { const name = String(top(2) || '').slice(1); font = Object.prototype.hasOwnProperty.call(fonts, name) ? fonts[name] : null; }
+    else if (tok === 'Tj') show(top(1));
+    else if (tok === "'" || tok === '"') { out += '\n'; show(top(1)); }
+    else if (tok === 'TJ' && Array.isArray(top(1))) for (const e of top(1)) { if (e && e.bytes) show(e); else if (parseFloat(e) < -200) out += ' '; }
+    else if (tok === 'Td' || tok === 'TD') out += parseFloat(top(1)) ? '\n' : ' ';
+    else if (tok === 'T*') out += '\n';
+    else if (tok === 'Tm') { const y = parseFloat(top(1)); out += lastY !== null && Math.abs(y - lastY) > 1 ? '\n' : ' '; lastY = y; }
+    else if (tok === 'ET') out += ' ';
+    stack.length = 0;
+  }
+  return out;
+}
+
 /* ---------------- mapping ---------------- */
 const hex = uuid => String(uuid || '').toLowerCase().replace(/[^0-9a-f]/g, '');
 const chatIdFor = uuid => 'a-' + hex(uuid).slice(0, 32);
@@ -300,4 +465,4 @@ async function importExport(buf, D) {
   return out;
 }
 
-module.exports = { importExport, readZip, officeText, _ids: { chatIdFor, projectIdFor } };
+module.exports = { importExport, readZip, officeText, pdfText, _ids: { chatIdFor, projectIdFor } };

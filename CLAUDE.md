@@ -14,7 +14,7 @@ The owner isn't a programmer: explain changes in plain language, and keep the ap
 - `commands.js` — the `/` menu (skills, commands, plugins, headless-safe built-ins). `/plugin …` is run by
   Roundtable itself through `claude plugin …` (`POST /api/plugin`), since the interactive menu needs a terminal.
 - `import.js` — imports claude.ai data exports (old single zip and new split zips / manifest), and pulls the
-  text out of attached Word, PowerPoint and Excel files (`officeText`) so every chat can read them.
+  text out of attached Word, PowerPoint, Excel (`officeText`) and PDF files (`pdfText`) so every chat can read them.
 - `remote.js` — optional phone access: a second listener (default port 3500) that only answers Tailscale
   addresses and needs a password sign-in (cookie session, lockout after failed tries).
 - `electron/main.js` + `electron/preload.js` — windows, menu, auto-updates, claude.ai export downloads.

@@ -18,7 +18,7 @@ const lines = [
   { type: 'user', cwd: tmp, sessionId: id, timestamp: '2026-01-01T10:00:00Z', message: { role: 'user', content: 'Fix the flaky login test' } },
   { type: 'assistant', cwd: tmp, sessionId: id, timestamp: '2026-01-01T10:00:05Z', message: { id: 'm1', role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } }] } },
   { type: 'user', cwd: tmp, sessionId: id, timestamp: '2026-01-01T10:00:09Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: '12 passed' }] } },
-  { type: 'assistant', cwd: tmp, sessionId: id, timestamp: '2026-01-01T10:00:12Z', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'Fixed a race in the **mock clock**.' }] } },
+  { type: 'assistant', cwd: tmp, sessionId: id, timestamp: '2026-01-01T10:00:12Z', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'Fixed a race in the **mock clock**.' }], usage: { input_tokens: 10, cache_read_input_tokens: 150000, output_tokens: 50 } } },
 ];
 fs.writeFileSync(path.join(projDir, id + '.jsonl'), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
 
@@ -39,6 +39,7 @@ const { start } = require('../server.js');
 
   const s = await get(`/api/sessions/${id}`);
   assert.deepStrictEqual(s.turns.map(t => t.role), ['user', 'assistant'], 'merges tool calls into one reply');
+  assert.deepStrictEqual(s.context, { used: 150060, window: 200000 }, 'reports how full the chat\'s memory is');
   const tool = s.turns[1].blocks.find(b => b.type === 'tool');
   assert.strictEqual(tool.result, '12 passed', 'attaches tool output');
 
@@ -154,6 +155,38 @@ const { start } = require('../server.js');
   });
   assert.strictEqual(officeText(xlsx, '.xlsx'), '## Sheet: Grades & more\nName\t\tScore\nAna\t\t97.5\tTRUE', 'reads spreadsheets cell by cell');
   assert.throws(() => officeText(Buffer.from('not a zip'), '.docx'), 'refuses files that aren\'t really Word files');
+  // a tiny PDF: one plain line, one line in a font with a ToUnicode map (codes 1,2 -> W,X), one compressed page
+  const makePdf = () => {
+    const zlibm = require('zlib');
+    const cmap = '/CIDInit /ProcSet findresource begin\nbegincmap\n1 begincodespacerange <0000> <FFFF> endcodespacerange\n2 beginbfchar <0001> <0057> <0002> <0058> endbfchar\nendcmap';
+    const page1 = 'BT /F1 12 Tf 72 700 Td (Lab 7 \\(IPsec\\)) Tj ET\nBT /F2 12 Tf 72 680 Td <00010002> Tj ET';
+    const page2 = zlibm.deflateSync(Buffer.from('BT /F1 12 Tf 72 700 Td [(Hi) -300 (there)] TJ ET'));
+    const objs = [
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>',
+      '<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>',
+      '<< /Length ' + page1.length + ' >>\nstream\n' + page1 + '\nendstream',
+      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+      '<< /Type /Font /Subtype /Type0 /Encoding /Identity-H /ToUnicode 7 0 R >>',
+      '<< /Length ' + cmap.length + ' >>\nstream\n' + cmap + '\nendstream',
+      '<< /Type /Page /Parent 2 0 R /Contents 9 0 R >>',
+      null,
+    ];
+    const chunks = [Buffer.from('%PDF-1.4\n')];
+    objs.forEach((o, i) => chunks.push(o ? Buffer.from((i + 1) + ' 0 obj\n' + o + '\nendobj\n') : Buffer.concat([Buffer.from((i + 1) + ' 0 obj\n<< /Length ' + page2.length + ' /Filter /FlateDecode >>\nstream\n'), page2, Buffer.from('\nendstream\nendobj\n')])));
+    chunks.push(Buffer.from('trailer\n<< /Root 1 0 R >>\n%%EOF\n'));
+    return Buffer.concat(chunks);
+  };
+
+  const { pdfText } = require('../import.js');
+  assert.strictEqual(pdfText(makePdf()), 'Lab 7 (IPsec)\nWX\n\nHi there', 'reads PDF text, compressed pages and mapped fonts included');
+  assert.strictEqual(pdfText(Buffer.from('%PDF-1.4 nothing here')), '', 'a PDF without text gives nothing');
+  // 1.10.1 saved each usage check as a chat; those move to the trash, real chats stay
+  const usageDir = path.join(tmp, 'projects', '-home');
+  fs.mkdirSync(usageDir, { recursive: true });
+  fs.writeFileSync(path.join(usageDir, 'usage-check.jsonl'), JSON.stringify({ type: 'user', message: { role: 'user', content: '<command-name>/usage</command-name>' } }) + '\n');
+  assert.strictEqual(await _internal.trashUsageChecks(), 1, 'moves the usage-check chats');
+  assert.ok(fs.existsSync(path.join(tmp, '.roundtable', 'trash', 'usage-checks', 'usage-check.jsonl')) && fs.existsSync(path.join(projDir, id + '.jsonl')), 'into the trash, leaving real chats alone');
   // the text is saved next to the upload, and each kind of chat is pointed at it
   const upDir = path.join(tmp, '.roundtable', 'uploads', 'office-test');
   fs.mkdirSync(upDir, { recursive: true });

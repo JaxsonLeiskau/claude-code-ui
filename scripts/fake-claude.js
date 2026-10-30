@@ -12,7 +12,8 @@ let input = ''; process.stdin.on('data', d => input += d); process.stdin.on('end
     out({ type: 'system', subtype: 'init', session_id: 'chat-session-1' });
     const t = /final answer/i.test(input) ? 'CONSENSUS: use Tailscale.' : 'Claude answer.';
     out({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: t } } });
-    return out({ type: 'result', is_error: false, result: t });
+    out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: t }], usage: { input_tokens: 1200, output_tokens: 30 } } });
+    return out({ type: 'result', is_error: false, result: t, modelUsage: { 'claude-test': { contextWindow: 200000 } } });
   }
   if (a.includes('json')) return out({ type: 'result', is_error: false, result: 'NO_CHANGE' });
   const ri = a.indexOf('--resume'); const id = ri >= 0 ? a[ri + 1] : crypto.randomUUID(); const cwd = process.cwd();
