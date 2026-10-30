@@ -11,7 +11,8 @@ The owner isn't a programmer: explain changes in plain language, and keep the ap
 - `ai.js` — Open WebUI / ChatGPT / Gemini / DeepSeek (OpenAI-compatible APIs), plain Claude chats and
   debate mode (Claude runs through the CLI with tools off).
 - `sync.js` — sync through a private GitHub repo via the GitHub REST API (three-way compare per file).
-- `commands.js` — the `/` menu (skills, commands, plugins, headless-safe built-ins).
+- `commands.js` — the `/` menu (skills, commands, plugins, headless-safe built-ins). `/plugin …` is run by
+  Roundtable itself through `claude plugin …` (`POST /api/plugin`), since the interactive menu needs a terminal.
 - `import.js` — imports claude.ai data exports (old single zip and new split zips / manifest), and pulls the
   text out of attached Word, PowerPoint and Excel files (`officeText`) so every chat can read them.
 - `remote.js` — optional phone access: a second listener (default port 3500) that only answers Tailscale

@@ -203,7 +203,7 @@ async function writeLocal(p, buf) {
     const pr = JSON.parse(buf.toString('utf8'));
     const store = D.getStore();
     // a project folder from another kind of computer (e.g. a Windows path on a Mac) gets a local default
-    if (pr.kind !== 'chat' && (!pr.cwd || !path.isAbsolute(pr.cwd) || (process.platform !== 'win32' && /^[A-Za-z]:\\/.test(pr.cwd)))) {
+    if ((pr.kind !== 'chat' || pr.cwd) && (!pr.cwd || !path.isAbsolute(pr.cwd) || (process.platform !== 'win32' && /^[A-Za-z]:\\/.test(pr.cwd)))) {
       const old = store.projects[m[1]];
       pr.cwd = old && old.cwd && path.isAbsolute(old.cwd) ? old.cwd : path.join(os.homedir(), 'Claude Projects', String(pr.name || m[1]).replace(/[<>:"/\\|?*]/g, '_'));
     }

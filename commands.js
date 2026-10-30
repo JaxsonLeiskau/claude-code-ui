@@ -29,6 +29,8 @@ const BUILTINS = [
   { name: 'mcp', argHint: '', description: 'Show the status of connected MCP servers' },
   { name: 'output-style', argHint: '[style]', description: 'List output styles, or switch to one' },
   { name: 'rename', argHint: '<name>', description: 'Rename this chat in Claude Code' },
+  // run by Roundtable itself through "claude plugin …" (the interactive menu needs the terminal)
+  { name: 'plugin', argHint: 'install <name> | marketplace add <owner/repo> | list', description: 'Add, list, turn on/off or remove plugins' },
 ];
 
 function frontmatter(text) {

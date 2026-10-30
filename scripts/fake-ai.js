@@ -6,7 +6,9 @@ http.createServer((req, res) => {
     if (req.headers.authorization !== 'Bearer good-key') { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { message: 'Incorrect API key provided' } })); }
     if (req.url.endsWith('/models')) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ data: [{ id: 'test-model' }] })); }
     const j = JSON.parse(b); const last = j.messages[j.messages.length - 1].content;
-    const text = /final answer/i.test(last) ? 'CONSENSUS: use Tailscale.' : /Revised answer/.test(last) ? `**Review:** ok\n**Revised answer:** ${name} agrees.` : `${name} answer.`;
+    const sys = (j.messages.find(m => m.role === 'system') || {}).content || '';
+    // shows the tests that a project's earlier chats (with other AIs) were passed along
+    const text = /Earlier chats in this project[\s\S]*Plan a trip/.test(sys) ? `${name} remembers the trip.` : /final answer/i.test(last) ? 'CONSENSUS: use Tailscale.' : /Revised answer/.test(last) ? `**Review:** ok\n**Revised answer:** ${name} agrees.` : `${name} answer.`;
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     for (const w of text.match(/\S+\s*/g)) res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: w } }] }) + '\n\n');
     res.end('data: [DONE]\n\n');

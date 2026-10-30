@@ -3,6 +3,7 @@
 const fs = require('fs'), path = require('path'), os = require('os'), crypto = require('crypto');
 const a = process.argv.slice(2);
 if (a.includes('--version')) { console.log('0.0.0 (fake)'); process.exit(0); }
+if (a[0] === 'plugin') { console.log('fake claude plugin ' + a.slice(1).join(' ')); process.exit(0); }
 let input = ''; process.stdin.on('data', d => input += d); process.stdin.on('end', () => {
   const out = o => process.stdout.write(JSON.stringify(o) + '\n');
   out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', utilization: 0.25, resetsAt: Date.now() + 3600e3, rateLimitType: 'five_hour' } });

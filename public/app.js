@@ -65,6 +65,10 @@ const S = {
   view: null, viewToken: 0,
   settings: Object.assign({ theme: 'system', name: '', model: '', perm: 'acceptEdits', cwd: '' }, store.get('settings', {})),
   allowed: store.get('allowed', {}),
+  drafts: store.get('drafts', {}),        // unsent text, per chat
+  pendingFor: {},                         // files added but not sent yet, per chat
+  queues: {},                             // messages waiting for a reply to finish, per chat id
+  groupsOpen: store.get('groupsOpen', {}),
 };
 if (S.settings.model !== 'debate' && !/^(claude|model):/.test(S.settings.model || '')) S.settings.model = 'claude:' + (S.settings.model || '');
 const saveSettings = () => store.set('settings', S.settings);
@@ -153,6 +157,7 @@ async function refreshRuns() {
     const { runs } = await api('/api/runs');
     const before = S.runs.map(r => r.id).sort().join();
     S.runs = runs;
+    drainBackground();
     if (runs.map(r => r.id).sort().join() !== before) { await refreshSessions(); return true; }
   } catch {}
   return false;
@@ -188,19 +193,29 @@ function renderSidebar() {
   projSec.hidden = !!q;
   projList.innerHTML = '';
   const projects = S.projects;
-  const shown = S.showAllProjects ? projects : projects.slice(0, 6);
-  for (const p of shown) {
-    const el = document.createElement('div');
-    el.className = 'sb-proj' + (S.view && S.view.mode === 'project' && S.view.projectId === p.id ? ' active' : '');
-    el.title = p.virtual ? homeify(p.cwd) : `${p.name}\n${homeify(p.cwd)}`;
-    el.innerHTML = `${projIcon(p)}<span class="t">${esc(p.name)}</span><span class="count">${p.chatCount || ''}</span>`;
-    el.onclick = () => goProject(p.id);
-    projList.appendChild(el);
+  const activeProj = S.view && S.view.mode === 'project' ? S.view.projectId : null;
+  // groups first (folders you open and close), then projects that aren't in one
+  const groups = new Map();
+  for (const p of projects) if (p.group) { if (!groups.has(p.group)) groups.set(p.group, []); groups.get(p.group).push(p); }
+  for (const [name, list] of [...groups].sort((a, b) => a[0].localeCompare(b[0], undefined, { sensitivity: 'base' }))) {
+    const open = !!S.groupsOpen[name];
+    const g = document.createElement('div');
+    g.className = 'sb-group' + (open ? ' open' : '') + (!open && list.some(p => p.id === activeProj) ? ' has-active' : '');
+    g.title = `${name}: ${list.length} project${list.length > 1 ? 's' : ''}`;
+    g.innerHTML = `<span class="chev">${I.chevron}</span>${I.folder}<span class="t">${esc(name)}</span><span class="count">${list.length}</span><button class="more" title="Group options">${I.dots}</button>`;
+    g.onclick = e => { if (e.target.closest('.more')) return; S.groupsOpen[name] = !open; if (open) delete S.groupsOpen[name]; store.set('groupsOpen', S.groupsOpen); renderSidebar(); };
+    g.querySelector('.more').onclick = e => { e.stopPropagation(); groupMenu(name, list, e.currentTarget); };
+    g.addEventListener('contextmenu', e => { e.preventDefault(); groupMenu(name, list, { x: e.clientX, y: e.clientY }); });
+    projList.appendChild(g);
+    if (open) for (const p of list) projList.appendChild(projItem(p, activeProj, true));
   }
-  if (projects.length > 6) {
+  const loose = projects.filter(p => !p.group);
+  const shown = S.showAllProjects ? loose : loose.slice(0, 6);
+  for (const p of shown) projList.appendChild(projItem(p, activeProj, false));
+  if (loose.length > 6) {
     const more = document.createElement('button');
     more.className = 'sb-more';
-    more.textContent = S.showAllProjects ? 'Show less' : `Show all ${projects.length}`;
+    more.textContent = S.showAllProjects ? 'Show less' : `Show all ${loose.length}`;
     more.onclick = () => { S.showAllProjects = !S.showAllProjects; renderSidebar(); };
     projList.appendChild(more);
   }
@@ -236,6 +251,70 @@ function renderSidebar() {
   if (!rest.length && !pendingNew.length && !starred.length) {
     rl.innerHTML = `<div class="sb-empty">${!S.loaded ? 'Loading…' : q ? 'No chats match your search.' : 'No Claude Code chats yet. Start one!'}</div>`;
   }
+}
+
+function projItem(p, activeProj, nested) {
+  const el = document.createElement('div');
+  el.className = 'sb-proj' + (nested ? ' nested' : '') + (p.id === activeProj ? ' active' : '');
+  el.title = p.virtual ? homeify(p.cwd) : `${p.name}${p.cwd ? '\n' + homeify(p.cwd) : ''}`;
+  el.innerHTML = `${projIcon(p)}<span class="t">${esc(p.name)}</span><span class="count">${p.chatCount || ''}</span><button class="more" title="Project options">${I.dots}</button>`;
+  el.onclick = e => { if (!e.target.closest('.more')) goProject(p.id); };
+  el.querySelector('.more').onclick = e => { e.stopPropagation(); projectMenu(p, e.currentTarget); };
+  el.addEventListener('contextmenu', e => { e.preventDefault(); projectMenu(p, { x: e.clientX, y: e.clientY }); });
+  return el;
+}
+function projectMenu(p, anchor) {
+  showMenu(anchor, [
+    { icon: 'box', label: 'Open project', run: () => goProject(p.id) },
+    { icon: 'folder', label: p.group ? 'Move to another group…' : 'Put in a group…', run: () => groupDialog(p) },
+    ...(p.group ? [{ icon: 'up', label: `Take out of "${p.group}"`, run: () => setGroup([p.id], '') }] : []),
+  ]);
+}
+function groupMenu(name, list, anchor) {
+  showMenu(anchor, [
+    { icon: 'edit', label: 'Rename group', run: () => renameGroupDialog(name, list) },
+    '-',
+    { icon: 'x', label: 'Ungroup (keeps the projects)', run: () => setGroup(list.map(p => p.id), '') },
+  ]);
+}
+async function setGroup(ids, group) {
+  try { for (const id of ids) await api(`/api/projects/${id}`, { method: 'PATCH', body: { group } }); }
+  catch (e) { toast(e.message); }
+  if (group) { S.groupsOpen[group] = true; store.set('groupsOpen', S.groupsOpen); }
+  await refreshSessions();
+  if (S.view && S.view.mode === 'project') loadProject();
+}
+// Pick a group for a project, or start a new one
+function groupDialog(p) {
+  const names = [...new Set(S.projects.map(x => x.group).filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  const m = modal({
+    title: `Put "${p.name}" in a group`,
+    body: `${names.length ? `<div class="pick-list">${names.map(n => `<button class="pick ${n === p.group ? 'on' : ''}" data-g="${esc(n)}">${I.folder}<span>${esc(n)}</span></button>`).join('')}</div>` : '<p>Groups are folders in the sidebar that hold projects, like "School" or "Work".</p>'}
+      <label class="field"><span>New group</span><input class="input" id="grpName" maxlength="60" placeholder="e.g. School"></label>`,
+    foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="grpNew">Create and move</button>`,
+  });
+  m.el.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { m.close(); setGroup([p.id], b.dataset.g); });
+  const inp = $('#grpName', m.el);
+  const create = () => { const n = inp.value.trim(); if (!n) { inp.focus(); return; } m.close(); setGroup([p.id], n); };
+  $('#grpNew', m.el).onclick = create;
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') create(); });
+  if (!names.length) inp.focus();
+}
+function renameGroupDialog(name, list) {
+  const m = modal({
+    title: 'Rename group',
+    body: `<label class="field"><input class="input" id="grpRename" maxlength="60" value="${esc(name)}"></label>`,
+    foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="grpSave">Save</button>`,
+  });
+  const inp = $('#grpRename', m.el); inp.focus(); inp.select();
+  const save = () => {
+    const n = inp.value.trim(); if (!n || n === name) { m.close(); return; }
+    m.close();
+    if (S.groupsOpen[name]) { delete S.groupsOpen[name]; S.groupsOpen[n] = true; store.set('groupsOpen', S.groupsOpen); }
+    setGroup(list.map(p => p.id), n);
+  };
+  $('#grpSave', m.el).onclick = save;
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
 }
 
 // Another window on this chat; in the desktop app it opens as a new app window, in a browser as a tab
@@ -373,7 +452,7 @@ function currentMode() {
   const lock = lockedMode();
   if (!lock && inChatProject()) {
     const m = S.settings.chatModel || 'model:claude';
-    return (m === 'debate' && S.ai && S.ai.debateEnabled) || (S.ai && (S.ai.available || []).some(p => 'model:' + p.id === m)) ? m : 'model:claude';
+    return m.startsWith('claude:') || (m === 'debate' && S.ai && S.ai.debateEnabled) || (S.ai && (S.ai.available || []).some(p => 'model:' + p.id === m)) ? m : 'model:claude';
   }
   if (lock === 'claude') return (S.view.claudeModel && S.view.claudeModel.startsWith('claude:')) ? S.view.claudeModel : (S.settings.model.startsWith('claude:') ? S.settings.model : 'claude:');
   if (lock) return lock;
@@ -407,7 +486,7 @@ function buildModeOptions() {
   const sel = $('#modelSel');
   const lock = lockedMode();
   const opt = (v, l) => `<option value="${esc(v)}">${esc(l)}</option>`;
-  let h = inChatProject() ? '' : `<optgroup label="Claude Code">${opt('claude:', 'Claude Code')}${opt('claude:opus', 'Opus')}${opt('claude:sonnet', 'Sonnet')}${opt('claude:haiku', 'Haiku')}</optgroup>`;
+  let h = `<optgroup label="Claude Code">${opt('claude:', 'Claude Code')}${opt('claude:opus', 'Opus')}${opt('claude:sonnet', 'Sonnet')}${opt('claude:haiku', 'Haiku')}</optgroup>`;
   const avail = (S.ai && S.ai.available) || [];
   if (lock !== 'claude') {
     if (avail.length) h += `<optgroup label="Chat with">${avail.map(p => opt('model:' + p.id, p.name)).join('')}</optgroup>`;
@@ -789,12 +868,81 @@ function route() {
   else if (pm) openProject(pm[1]);
   else newChat();
 }
+/* ---------------- drafts: unsent text and files stay with their own chat ---------------- */
+const draftKey = v => !v ? '' : v.id ? 'c:' + v.id : v.mode === 'project' ? 'p:' + v.projectId : 'new';
+function saveDraft() {
+  const k = draftKey(S.view);
+  if (!k) return;
+  const t = $('#input').value;
+  if (t.trim()) S.drafts[k] = t; else delete S.drafts[k];
+  store.set('drafts', S.drafts);
+}
+// Every switch between chats, projects and "new chat" goes through here
+function setView(v) {
+  if (S.view) { saveDraft(); S.pendingFor[draftKey(S.view)] = S.pending; }
+  S.view = v;
+  const k = draftKey(v);
+  $('#input').value = S.drafts[k] || '';
+  S.pending = S.pendingFor[k] || [];
+  if (v.id && S.queues[v.id]) v.queue = S.queues[v.id];
+  autoGrow(); renderAttachRow(); renderQueue();
+}
+// A new chat just got its id: its draft and queue move with it
+function chatIdAssigned(v, id) {
+  if (S.drafts.new !== undefined && v === S.view) { delete S.drafts.new; saveDraft(); }
+  if (v.queue) S.queues[id] = v.queue;
+}
+
+/* ---------------- queued messages: typed while a reply is still running ---------------- */
+function renderQueue() {
+  const v = S.view, row = $('#queueRow');
+  const q = (v && v.queue) || [];
+  row.hidden = !q.length;
+  if (!q.length) q.paused = false;
+  row.innerHTML = q.map((m, i) => `<div class="q-item"><span class="q-tag">${q.paused ? 'Paused' : i === 0 ? 'Next' : 'Queued'}</span><button type="button" class="q-text" data-edit="${i}" title="Edit (moves it back into the message box)">${esc(m.text || m.atts.map(a => a.name).join(', '))}${m.atts.length && m.text ? ` <span class="q-files">+ ${m.atts.length} file${m.atts.length > 1 ? 's' : ''}</span>` : ''}</button>${q.paused && i === 0 ? '<button type="button" class="btn small" data-go>Send now</button>' : ''}<button type="button" class="icon-btn tiny" data-del="${i}" title="Remove from queue">${I.x}</button></div>`).join('');
+  row.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { q.splice(+b.dataset.del, 1); renderQueue(); });
+  const go = row.querySelector('[data-go]');
+  if (go) go.onclick = () => { q.paused = false; renderQueue(); drainQueue(); };
+  row.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
+    const input = $('#input');
+    if (input.value.trim()) { toast('Send or clear what\'s in the message box first'); return; }
+    const [m] = q.splice(+b.dataset.edit, 1);
+    input.value = m.text; S.pending.push(...m.atts);
+    renderQueue(); renderAttachRow(); autoGrow(); renderComposerState(); input.focus();
+  });
+}
+// The reply finished: send the next queued message in this chat
+function drainQueue() {
+  const v = S.view;
+  if (!v || v.runId || v.sending || !v.queue || !v.queue.length || v.queue.paused) return;
+  v.queue.failed = false;
+  const next = v.queue.shift();
+  renderQueue();
+  submit(next.text, next.atts);
+}
+// Chats you've switched away from keep working through their queue
+let drainingBg = false;
+async function drainBackground() {
+  if (drainingBg) return;
+  drainingBg = true;
+  try {
+    for (const [id, q] of Object.entries(S.queues)) {
+      if (!q.length || q.failed || q.paused || (S.view && S.view.id === id) || S.runs.some(r => r.sessionId === id)) continue;
+      const next = q.shift();
+      try {
+        await api('/api/chat', { method: 'POST', body: { sessionId: id, prompt: next.text, attachments: next.atts.map(a => a.id), permissionMode: next.perm, model: next.model, allowedTools: S.allowed[id] || [] } });
+        S.runs.push({ sessionId: id }); // counts as running until the next check
+      } catch (e) { q.unshift(next); q.failed = true; toast(`A queued message couldn't be sent: ${e.message}`); }
+    }
+  } finally { drainingBg = false; }
+}
+
 const projectById = id => S.projects.find(p => p.id === id);
 const projectName = id => { const p = projectById(id); return p ? p.name : ''; };
 
 function newChat(cwd) {
   S.viewToken++;
-  S.view = { mode: 'chat', id: null, cwd: cwd || S.settings.cwd || (S.info && S.info.defaultCwd) || '', title: 'New chat', turns: [], runId: null, live: null, pinned: false };
+  setView({ mode: 'chat', id: null, cwd: cwd || S.settings.cwd || (S.info && S.info.defaultCwd) || '', title: 'New chat', turns: [], runId: null, live: null, pinned: false });
   if (location.hash !== '#/' && location.hash !== '') history.pushState(null, '', '#/');
   renderAll();
   closeMobileSidebar();
@@ -804,7 +952,7 @@ function newChat(cwd) {
 async function openSession(id) {
   const token = ++S.viewToken;
   const s = S.sessions.find(x => x.id === id);
-  S.view = { mode: 'chat', id, cwd: s ? s.cwd : '', title: s ? s.title : 'Loading…', turns: [], runId: null, live: null, pinned: s ? s.pinned : false, projectId: s ? s.projectId : null, kind: s ? s.kind : null, provider: s ? s.provider : null, loading: true };
+  setView({ mode: 'chat', id, cwd: s ? s.cwd : '', title: s ? s.title : 'Loading…', turns: [], runId: null, live: null, pinned: s ? s.pinned : false, projectId: s ? s.projectId : null, kind: s ? s.kind : null, provider: s ? s.provider : null, loading: true });
   renderAll();
   let d;
   try { d = await api(`/api/sessions/${id}`); }
@@ -820,6 +968,7 @@ async function openSession(id) {
   renderAll();
   scrollToBottom(true);
   if (d.run) attach(d.run.id, token);
+  else { if (S.view.queue) S.view.queue.failed = false; drainQueue(); }
 }
 
 /* ---------------- streaming ---------------- */
@@ -853,6 +1002,7 @@ async function attach(runId, token) {
   scheduleRender();
   renderComposerState();
   refreshRuns().then(changed => { if (!changed) refreshSessions(); });
+  drainQueue();
   setTimeout(refreshSessions, 6000); setTimeout(refreshSessions, 15000); // automatic titles arrive a few seconds later
   loadUsage();
 }
@@ -926,7 +1076,7 @@ function handleClaude(o) {
       const wasNew = !v.id;
       v.id = o.session_id;
       if (S.allowed.new) { S.allowed[v.id] = S.allowed.new; delete S.allowed.new; store.set('allowed', S.allowed); }
-      if (wasNew) { history.replaceState(null, '', `#/c/${v.id}`); refreshRuns(); renderHeader(); }
+      if (wasNew) { chatIdAssigned(v, v.id); history.replaceState(null, '', `#/c/${v.id}`); refreshRuns(); renderHeader(); }
     }
     return;
   }
@@ -1026,6 +1176,8 @@ function renderTurn(t, idx) {
   if (t.role === 'notice') {
     if (t.kind === 'error') {
       el.innerHTML = `<div class="notice-card error"><div class="title">${I.alert}<span>${esc(t.text)}</span></div>${t.detail ? `<pre>${esc(t.detail)}</pre>` : ''}</div>`;
+    } else if (t.detail) {
+      el.innerHTML = `<div class="notice-card"><div class="title">${I.box}<span>${esc(t.text)}</span></div><pre>${esc(t.detail)}</pre></div>`;
     } else el.innerHTML = `<span class="notice-pill">${esc(t.text)}</span>`;
     return el;
   }
@@ -1225,7 +1377,7 @@ function renderComposerState() {
   const locked = !!(v && (v.id || v.turns.length || v.mode === 'project'));
   fb.classList.toggle('locked', locked);
   fb.title = locked ? `Working in ${v.cwd}` : 'Choose working folder';
-  $('#folderLabel').textContent = v ? (baseName(v.cwd) || homeify(v.cwd) || 'Choose folder') : '';
+  $('#folderLabel').textContent = v ? (baseName(v.cwd) || homeify(v.cwd) || (v.mode === 'project' ? 'Project folder' : 'Choose folder')) : '';
   $('#permSel').closest('.pill').classList.toggle('perm-bypass', $('#permSel').value === 'bypassPermissions');
   buildModeOptions();
   const dt = $('#debateToggle');
@@ -1237,8 +1389,9 @@ function renderComposerState() {
   const claudeMode = mode.startsWith('claude:');
   $('#composer').classList.toggle('nonclaude', !claudeMode);
   const who = claudeMode ? 'Claude' : mode === 'debate' ? 'the panel' : modeLabel(mode);
-  $('#input').placeholder = v && v.mode === 'project' ? `Start a chat in ${v.project ? v.project.name : 'this project'}…`
+  $('#input').placeholder = running || (v && v.sending) ? 'Type your next message — it sends when this reply is done' : v && v.mode === 'project' ? `Start a chat in ${v.project ? v.project.name : 'this project'}…`
     : v && v.turns.length ? `Reply to ${who}…` : claudeMode ? 'How can I help you today?' : mode === 'debate' ? `Ask ${((S.ai && S.ai.debateParticipants) || []).map(p => p.name).join(', ').replace(/, ([^,]*)$/, ' and $1') || 'the panel'} to debate…` : `Message ${who}…`;
+  renderUsage();
 }
 
 function updateEmpty() {
@@ -1290,7 +1443,7 @@ function placeComposer() {
 async function openProject(id) {
   const token = ++S.viewToken;
   const known = projectById(id);
-  S.view = { mode: 'project', projectId: id, id: null, cwd: known ? known.cwd : '', title: known ? known.name : '', turns: [], runId: null, live: null, project: known || null, files: [], memory: '', loading: !known };
+  setView({ mode: 'project', projectId: id, id: null, cwd: known ? known.cwd : '', title: known ? known.name : '', turns: [], runId: null, live: null, project: known || null, files: [], memory: '', loading: !known });
   renderAll();
   if (!known) $('#projectPage').innerHTML = '<div class="pp"><div class="pp-main"><div class="skeleton" style="width:40%;height:28px"></div><div class="skeleton"></div></div></div>';
   await loadProject(token);
@@ -1337,7 +1490,7 @@ function renderProjectPage() {
       <div class="pp-chats">
         ${chats.length ? `<div class="pp-chats-head">${chats.length} chat${chats.length > 1 ? 's' : ''}</div>` : ''}
         ${chats.map(s => `<button class="pp-chat" data-id="${esc(s.id)}"><span class="t">${running.has(s.id) ? `<span class="running-dot">${I.spinner}</span>` : chatIcon(s)}${esc(s.title)}</span><span class="when">Last message ${esc(ago(s.updated))}</span></button>`).join('')
-          || `<div class="pp-empty">No chats yet. Every chat you start here shares this project's instructions, files and memory.</div>`}
+          || `<div class="pp-empty">No chats yet. Every chat you start here, with Claude Code, Claude or your other AIs, shares this project's instructions, files and memory, and can read the project's other chats.</div>`}
       </div>
     </div>
     <aside class="pp-side">
@@ -1357,7 +1510,7 @@ function renderProjectPage() {
           : `<div class="pp-drop" data-act="upload">${I.upload}<span>Add PDFs, docs, code or notes Claude should know about. Drop files here or click to upload.</span></div>`}
         <div class="pp-file-actions"><button class="btn small" data-act="upload">${I.upload}Upload</button><button class="btn small" data-act="text">${I.note}Add text</button></div>
       </section>
-      ${p.kind === 'chat' ? `<section class="pp-card compact"><div class="pp-card-head"><h3>${I.chat}Chat project</h3></div><div class="pp-card-sub" style="margin-top:4px">Chats here are conversations with Claude or your other AIs — no folder, no file changes.</div></section>` : `<section class="pp-card compact">
+      ${p.kind === 'chat' && !p.cwd ? `<section class="pp-card compact"><div class="pp-card-head"><h3>${I.chat}Chat project</h3></div><div class="pp-card-sub" style="margin-top:4px">Chat with Claude, ChatGPT or your other AIs here. Start a Claude Code chat and the project gets its own folder in Claude Projects.</div></section>` : `<section class="pp-card compact">
         <div class="pp-card-head"><h3>Folder</h3><button class="pp-link" data-act="folder">Change</button></div>
         <div class="pp-path" title="${esc(p.cwd)}">${esc(homeify(p.cwd))}</div>
       </section>`}
@@ -1369,7 +1522,8 @@ function renderProjectPage() {
     if (act === 'details') projectDialog(p);
     else if (act === 'more') showMenu(el, [
       { icon: 'edit', label: 'Edit details', run: () => projectDialog(p) },
-      { icon: 'terminal', label: 'Copy folder path', run: () => { copyText(p.cwd); toast('Copied folder path'); } },
+      { icon: 'folder', label: p.group ? 'Change group…' : 'Put in a group…', run: () => groupDialog(p) },
+      ...(p.cwd ? [{ icon: 'terminal', label: 'Copy folder path', run: () => { copyText(p.cwd); toast('Copied folder path'); } }] : []),
       ...(p.virtual ? [] : ['-', { icon: 'trash', label: 'Delete project', danger: true, run: () => deleteProjectDialog(p) }]),
     ]);
     else if (act === 'instr') instructionsDialog(p);
@@ -1704,7 +1858,6 @@ function bindAttachments() {
     if (e.defaultPrevented && e.__handledByProject) return;
     const files = [...e.dataTransfer.files];
     if (!files.length || e.__handledByProject) return;
-    if (S.view && S.view.runId) { toast('Wait for the reply to finish, then attach'); return; }
     addFiles(files);
   });
 }
@@ -1714,27 +1867,36 @@ async function loadUsage() {
   try { S.usage = (await api('/api/usage')).limits; } catch { return; }
   renderUsage();
 }
+// Claude's plan limits only matter when Claude is the one answering
+function usageApplies() {
+  const mode = currentMode();
+  if (mode.startsWith('claude:') || mode === 'model:claude') return true;
+  if (mode === 'debate') return ((S.ai && S.ai.debateParticipants) || []).some(p => p.id === 'claude');
+  return false;
+}
 function renderUsage() {
   const el = $('#usageBar'), L = S.usage || {};
-  const rows = [['five_hour', 'Current session'], ['seven_day', 'This week']].filter(([k]) => L[k]);
-  el.hidden = !rows.length;
-  if (!rows.length) return;
+  const rows = [['five_hour', 'Session', 'Current session'], ['seven_day', 'Week', 'This week']].filter(([k]) => L[k]);
+  el.hidden = !rows.length || !usageApplies();
+  if (el.hidden) return;
   const when = ms => {
     if (!ms) return '';
     const d = new Date(ms), now = new Date();
     const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     return d.toDateString() === now.toDateString() ? time : `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`;
   };
-  el.innerHTML = rows.map(([k, label]) => {
+  const R = 7, C = 2 * Math.PI * R;
+  el.innerHTML = rows.map(([k, label, long]) => {
     const u = L[k];
     const pct = typeof u.utilization === 'number' ? Math.round(u.utilization * 100) : null;
     const level = u.status === 'rejected' || (pct != null && pct >= 90) ? 'hi' : u.status === 'allowed_warning' || (pct != null && pct >= 70) ? 'mid' : 'lo';
     const text = u.status === 'rejected' ? 'Limit reached' : pct != null ? `${pct}% used` : u.status === 'allowed_warning' ? 'Getting close' : 'Within limit';
+    const short = u.status === 'rejected' ? 'Full' : pct != null ? `${pct}%` : u.status === 'allowed_warning' ? 'Close' : 'OK';
+    const fill = (pct != null ? Math.max(2, Math.min(100, pct)) : u.status === 'rejected' ? 100 : u.status === 'allowed_warning' ? 80 : 30) / 100;
     const reset = u.resetsAt ? ` · resets ${when(u.resetsAt)}` : '';
-    return `<div class="ub ${level}" title="${esc(label)}: ${esc(text + reset)}${u.usingOverage ? ' (using extra usage)' : ''}">
-      <span class="ub-label">${esc(label)}</span>
-      <span class="ub-track"><span class="ub-fill" style="width:${pct != null ? Math.max(2, Math.min(100, pct)) : u.status === 'rejected' ? 100 : u.status === 'allowed_warning' ? 80 : 30}%"></span></span>
-      <span class="ub-text">${esc(text)}${esc(reset)}</span>
+    return `<div class="ub ${level}" title="${esc(long)}: ${esc(text + reset)}${u.usingOverage ? ' (using extra usage)' : ''}">
+      <svg class="ub-ring" viewBox="0 0 18 18" width="16" height="16" aria-hidden="true"><circle class="ub-track" cx="9" cy="9" r="${R}"/><circle class="ub-fill" cx="9" cy="9" r="${R}" transform="rotate(-90 9 9)" stroke-dasharray="${C.toFixed(2)}" stroke-dashoffset="${(C * (1 - fill)).toFixed(2)}"/></svg>
+      <span class="ub-label">${esc(label)}</span><span class="ub-text">${esc(short)}</span>
     </div>`;
   }).join('');
 }
@@ -1826,16 +1988,61 @@ function slashKey(e) {
 async function send(text) {
   text = (text || '').trim();
   const v = S.view;
-  if (!v || v.runId) return;
+  if (!v) return;
   if (S.pending.some(a => a.status === 'uploading')) { toast('Still adding your files — one moment'); return; }
   const atts = S.pending.filter(a => a.status === 'ready');
   if (!text && !atts.length) return;
+  const input = $('#input');
+  const pm = !atts.length && text.match(/^\/plugins?(?:\s+([\s\S]*))?$/);
+  if (pm) { input.value = ''; autoGrow(); saveDraft(); renderComposerState(); return pluginCommand(text, pm[1] || ''); }
+  if (v.runId || v.sending) {
+    // a reply is still coming: this message waits its turn and goes as soon as it's done
+    const mode = currentMode();
+    if (!v.queue) { v.queue = []; if (v.id) S.queues[v.id] = v.queue; }
+    v.queue.push({ text, atts, perm: $('#permSel').value, model: mode.startsWith('claude:') ? mode.slice(7) : undefined });
+    S.pending = S.pending.filter(a => !atts.includes(a));
+    input.value = ''; autoGrow(); saveDraft(); renderAttachRow(); renderQueue(); renderComposerState();
+    return;
+  }
+  const mode = currentMode();
+  if (mode.startsWith('claude:') && !v.cwd && v.mode !== 'project') { toast('Pick a folder for Claude to work in first'); folderPicker('', p => { v.cwd = p; renderComposerState(); }); return; }
+  input.value = ''; autoGrow(); saveDraft();
+  S.pending = S.pending.filter(a => !atts.includes(a)); renderAttachRow();
+  return submit(text, atts);
+}
+
+// "/plugin …": run by Roundtable through Claude Code's command line, with the result shown in the chat
+async function pluginCommand(text, args) {
+  const v = S.view;
+  const inThread = v.mode !== 'project';
+  const note = { role: 'notice', text: `${text}: working on it…` };
+  if (inThread) { v.turns.push(note); renderThread(); updateEmpty(); scrollToBottom(true); } else toast(note.text);
+  let r;
+  try { r = await api('/api/plugin', { method: 'POST', body: { args, cwd: v.cwd || '' } }); }
+  catch (e) { r = { ok: false, output: e.message }; }
+  slash.list = null; // the / menu picks up new plugins
+  const adds = /^(install|i|enable|update|marketplace\s+add)\b/.test(args.trim());
+  Object.assign(note, { kind: r.ok ? undefined : 'error', detail: r.output,
+    text: r.ok ? `${text}: done${adds ? '. It works from your next message.' : ''}` : `${text} didn't work` });
+  if (inThread && S.view === v) { renderThread(); scrollToBottom(true); } else toast(note.text);
+}
+
+// Sends one message (typed now, or the next one from the queue)
+async function submit(text, atts) {
+  const v = S.view;
   const mode = currentMode();
   const isClaude = mode.startsWith('claude:');
-  if (isClaude && !v.cwd) { toast('Pick a folder for Claude to work in first'); folderPicker('', p => { v.cwd = p; renderComposerState(); }); return; }
   const token = S.viewToken;
   const input = $('#input');
-  input.value = ''; autoGrow(); renderComposerState();
+  // it didn't go: back into the message box, ahead of anything typed since
+  const putBack = () => {
+    if (token !== S.viewToken) return;
+    input.value = input.value.trim() ? `${text}\n\n${input.value}` : text;
+    for (const a of atts) if (!S.pending.includes(a)) S.pending.push(a);
+    saveDraft(); autoGrow(); renderAttachRow(); renderComposerState();
+  };
+  v.sending = true;
+  renderComposerState();
   try {
     const r = await api('/api/chat', {
       method: 'POST',
@@ -1850,6 +2057,7 @@ async function send(text) {
     if (token !== S.viewToken) return;
     if (r.sessionId && !v.id) {
       v.id = r.sessionId; v.kind = mode === 'debate' ? 'debate' : 'model'; v.provider = mode.startsWith('model:') ? mode.slice(6) : null; v.cwd = null;
+      chatIdAssigned(v, v.id);
       history.replaceState(null, '', `#/c/${v.id}`); renderHeader();
     }
     if (v.mode === 'project') { v.mode = 'chat'; v.title = 'New chat'; renderAll(); }
@@ -1858,14 +2066,12 @@ async function send(text) {
     setTimeout(refreshRuns, 600);
     scrollToBottom(true);
   } catch (e) {
-    if (e.code === 'FOLDER_MISSING') {
-      if (!input.value) input.value = text;
-      autoGrow(); renderComposerState();
-      return folderMissingDialog(v, e.cwd, e.suggestions);
-    }
+    putBack();
+    if (e.code === 'FOLDER_MISSING') return folderMissingDialog(v, e.cwd, e.suggestions);
     toast(e.message);
-    if (!input.value) input.value = text;
-    autoGrow(); renderComposerState();
+  } finally {
+    v.sending = false;
+    renderComposerState();
   }
 }
 
@@ -1888,6 +2094,7 @@ function folderMissingDialog(v, cwd, suggestions = []) {
 
 async function stop() {
   const v = S.view;
+  if (v && v.queue && v.queue.length) { v.queue.paused = true; renderQueue(); }
   if (v && v.runId) await api(`/api/runs/${v.runId}/stop`, { method: 'POST' }).catch(() => {});
 }
 
@@ -1965,7 +2172,7 @@ function bind() {
   $('#cwdChip').onclick = () => { if (S.view && S.view.cwd) { copyText(S.view.cwd); toast('Copied folder path'); } };
 
   const input = $('#input');
-  input.addEventListener('input', () => { autoGrow(); renderComposerState(); updateSlash(); });
+  input.addEventListener('input', () => { autoGrow(); renderComposerState(); updateSlash(); saveDraft(); });
   input.addEventListener('click', updateSlash);
   input.addEventListener('blur', () => setTimeout(closeSlash, 120));
   input.addEventListener('keydown', e => {

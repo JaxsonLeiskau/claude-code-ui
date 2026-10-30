@@ -73,18 +73,35 @@ function device(name, port) {
   assert.strictEqual(db.rounds.length, 2, 'two rounds');
   assert.strictEqual(d.turns[1].blocks[1].text, 'CONSENSUS: use Tailscale.', 'moderator consensus');
 
-  // plain Claude chats in a chat project
+  // a project holds every kind of chat (plain Claude, Claude Code, ChatGPT), and each can read the others
   const { project: cp } = await desk.api('/api/projects', 'POST', { name: 'Trips', kind: 'chat' });
-  assert.strictEqual(cp.kind, 'chat'); assert.strictEqual(cp.cwd, null, 'chat projects have no folder');
-  await assert.rejects(desk.api('/api/chat', 'POST', { prompt: 'x', projectId: cp.id }), /chat project/, 'no Claude Code in chat projects');
+  assert.strictEqual(cp.kind, 'chat'); assert.strictEqual(cp.cwd, null, 'chat projects start without a folder');
   const cc1 = await desk.api('/api/chat', 'POST', { kind: 'model', provider: 'claude', prompt: 'Plan a trip', projectId: cp.id });
   await desk.waitIdle();
   const ccv = await desk.api(`/api/sessions/${cc1.sessionId}`);
   assert.strictEqual(ccv.turns[1].speaker, 'Claude'); assert.strictEqual(ccv.session.projectId, cp.id);
   const use = (await desk.api('/api/usage')).limits;
   assert.strictEqual(use.five_hour.utilization, 0.25, 'plan usage collected from Claude Code');
-  await desk.api(`/api/sessions/${cc1.sessionId}`, 'DELETE');
+  await desk.api('/api/chat', 'POST', { prompt: 'Book it', projectId: cp.id });
+  await desk.waitIdle();
+  const cpNow = (await desk.api(`/api/projects/${cp.id}`)).project;
+  assert.ok(cpNow.cwd && fs.existsSync(cpNow.cwd), 'a chat project gets a folder the first time Claude Code is used in it');
+  const copy = fs.readFileSync(path.join(desk.home, '.roundtable', 'projects', cp.id, 'chats', cc1.sessionId + '.md'), 'utf8');
+  assert.ok(copy.includes('Plan a trip') && copy.includes('## Claude'), 'Claude Code gets a readable copy of the plain Claude chat');
+  const gpt = await desk.api('/api/chat', 'POST', { kind: 'model', provider: 'openai', prompt: 'What did we plan?', projectId: cp.id });
+  await desk.waitIdle();
+  assert.strictEqual((await desk.api(`/api/sessions/${gpt.sessionId}`)).turns[1].blocks[0].text, 'ChatGPT remembers the trip.', 'ChatGPT reads the project\'s earlier chats');
+  await desk.api(`/api/projects/${cp.id}`, 'PATCH', { group: 'School' });
+  assert.strictEqual((await desk.api('/api/sessions')).projects.find(p => p.id === cp.id).group, 'School', 'projects can be put in a group');
+  for (const s of (await desk.api('/api/sessions')).sessions.filter(s => s.projectId === cp.id)) await desk.api(`/api/sessions/${s.id}`, 'DELETE');
   await desk.api(`/api/projects/${cp.id}`, 'DELETE');
+
+  // "/plugin …" runs through Claude Code's command line (its menu needs a terminal)
+  const pl = await desk.api('/api/plugin', 'POST', { args: 'marketplace add DietrichGebert/ponytail' });
+  assert.ok(pl.ok && pl.output.includes('fake claude plugin marketplace add DietrichGebert/ponytail'), '/plugin marketplace add runs: ' + JSON.stringify(pl));
+  await assert.rejects(desk.api('/api/plugin', 'POST', { args: 'eval something' }), /can't run/, 'only plugin commands on the list run');
+  await assert.rejects(desk.api('/api/plugin', 'POST', { args: 'install %PATH%' }), /safely/, 'unsafe characters are refused');
+  assert.ok((await desk.api('/api/commands')).commands.some(c => c.name === 'plugin'), '/plugin shows in the / menu');
 
   // a Claude Code chat on the desktop
   const cc = await desk.api('/api/chat', 'POST', { prompt: 'Fix the bug', cwd: path.join(desk.home, 'work'), permissionMode: 'bypassPermissions' });

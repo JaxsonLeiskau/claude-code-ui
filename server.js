@@ -342,7 +342,7 @@ function projectIdFor(info) {
   if (m.projectId && m.projectId !== 'none' && store.projects[m.projectId]) return m.projectId;
   if (m.projectId !== 'none') {
     const owner = Object.values(store.projects)
-      .filter(p => p.kind !== 'chat' && p.cwd && info.cwd && path.resolve(p.cwd) === path.resolve(info.cwd))
+      .filter(p => p.cwd && info.cwd && path.resolve(p.cwd) === path.resolve(info.cwd))
       .sort((a, b) => (a.created || '').localeCompare(b.created || ''))[0];
     if (owner) return owner.id;
   }
@@ -365,7 +365,7 @@ function listProjects(sessions) {
   return [...out.values()].sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''));
 }
 const publicProject = p => ({
-  id: p.id, kind: p.kind === 'chat' ? 'chat' : 'code', importedFrom: p.importedFrom || null, name: p.name, description: p.description || '', instructions: p.instructions || '', cwd: p.kind === 'chat' ? null : localPath(p.cwd),
+  id: p.id, kind: p.kind === 'chat' ? 'chat' : 'code', importedFrom: p.importedFrom || null, name: p.name, description: p.description || '', instructions: p.instructions || '', cwd: p.cwd ? localPath(p.cwd) : null, group: p.group || null,
   memoryEnabled: p.memoryEnabled !== false, memoryUpdated: p.memoryUpdated || null, created: p.created, updated: p.updated, virtual: false,
 });
 
@@ -403,7 +403,7 @@ function turnsToMarkdown(info, turns) {
   for (const t of turns) {
     if (t.role === 'user') lines.push(`## User`, t.text, '');
     else if (t.role === 'assistant') {
-      lines.push('## Claude');
+      lines.push(`## ${t.speaker || 'Claude'}`);
       for (const b of t.blocks) {
         if (b.type === 'text') lines.push(b.text);
         else if (b.type === 'tool') {
@@ -428,11 +428,13 @@ async function syncChatExports(project, sessions, excludeId) {
     const out = path.join(dir, s.id + '.md');
     keep.add(s.id + '.md');
     try {
-      const file = await findSessionFile(s.id);
+      const app = isAppChatId(s.id); // ChatGPT, Gemini, plain Claude and debate chats too
+      const file = app ? chatFile(s.id) : await findSessionFile(s.id);
       if (!file) continue;
       const [src, dst] = await Promise.all([fsp.stat(file), fsp.stat(out).catch(() => null)]);
       if (dst && dst.mtimeMs >= src.mtimeMs) continue;
-      await fsp.writeFile(out, turnsToMarkdown(s, await loadTurns(file)));
+      const turns = app ? chatTurns(await loadChat(s.id) || { messages: [] }) : await loadTurns(file);
+      await fsp.writeFile(out, turnsToMarkdown(s, turns));
     } catch {}
   }
   for (const f of await fsp.readdir(dir).catch(() => [])) if (!keep.has(f)) await fsp.unlink(path.join(dir, f)).catch(() => {});
@@ -440,7 +442,7 @@ async function syncChatExports(project, sessions, excludeId) {
 }
 
 async function buildContext(project, sessionId) {
-  const sessions = await listSessions();
+  const sessions = [...await listSessions(), ...await listAppChats()];
   const [files, memory, earlier] = await Promise.all([listFiles(project.id), readMemory(project.id), syncChatExports(project, sessions, sessionId)]);
   const parts = [
     `<project-context>`,
@@ -717,7 +719,7 @@ function chatTurns(c) {
   return turns;
 }
 // The parts of a project that make sense without tools: instructions, memory, small text files
-async function plainProjectContext(project) {
+async function plainProjectContext(project, chatId) {
   if (!project) return '';
   const parts = [`You're helping with the project "${project.name}".${project.description ? ' ' + project.description : ''}`];
   if (project.instructions && project.instructions.trim()) parts.push('## Project instructions (follow these)\n' + project.instructions.trim());
@@ -728,7 +730,28 @@ async function plainProjectContext(project) {
     if (!f.text || f.size > budget) continue;
     try { parts.push(`<file name="${f.name}">\n${await fsp.readFile(path.join(filesDir(project.id), f.name), 'utf8')}\n</file>`); budget -= f.size; } catch {}
   }
+  parts.push(...await earlierChatsText(project, chatId));
   return parts.join('\n\n');
+}
+
+// The project's other chats (with any AI), most recent first, kept short so every message stays affordable
+const EARLIER_BUDGET = 24000, EARLIER_EACH = 6000;
+async function earlierChatsText(project, excludeId) {
+  const earlier = (await syncChatExports(project, [...await listSessions(), ...await listAppChats()], excludeId))
+    .sort((a, b) => (b.updated || '').localeCompare(a.updated || ''));
+  const out = [];
+  let budget = EARLIER_BUDGET;
+  for (const c of earlier) {
+    if (budget < 1000) break;
+    let text;
+    try { text = await fsp.readFile(path.join(chatsDir(project.id), c.id + '.md'), 'utf8'); } catch { continue; }
+    const max = Math.min(EARLIER_EACH, budget);
+    if (text.length > max) text = text.slice(0, Math.floor(max / 3)) + '\n\n[…the middle of this chat is left out…]\n\n' + text.slice(-Math.floor(max * 2 / 3));
+    out.push(text); budget -= text.length;
+  }
+  if (!out.length) return [];
+  const left = earlier.length - out.length;
+  return [`## Earlier chats in this project (most recent first${left > 0 ? `; ${left} older one${left > 1 ? 's' : ''} left out` : ''})\nThe user may refer to these. They can be with Claude Code, Claude or other AIs.`, ...out];
 }
 
 // Chat-API message content: text, plus images as data URLs and small text files inline
@@ -785,7 +808,7 @@ async function startAppRun({ chat, prompt, attachments = [] }) {
 
   (async () => {
     const project = run.projectId ? store.projects[run.projectId] : null;
-    const context = await plainProjectContext(project);
+    const context = await plainProjectContext(project, chat.id);
     const reply = { role: 'assistant', ts: null };
     try {
       if (chat.kind === 'debate') {
@@ -870,6 +893,23 @@ function requestAllowed(req) {
   const origin = req.headers.origin;
   if (origin && !allowedHosts.map(h => 'http://' + h).includes(origin.toLowerCase())) return false;
   return true;
+}
+
+// "/plugin …" typed in a chat: Claude Code's plugin menu only works in its terminal, so the same
+// thing runs through its command-line version ("claude plugin …") and the output is shown instead.
+const PLUGIN_CMDS = new Set(['marketplace', 'install', 'i', 'uninstall', 'remove', 'enable', 'disable', 'list', 'update', 'details', 'help', 'prune', 'autoremove', 'validate']);
+const splitArgs = s => [...String(s).matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map(m => m[1] ?? m[2] ?? m[3]);
+function runPluginCommand(args, cwd) {
+  return new Promise(resolve => {
+    let out = '', proc;
+    try { proc = spawnClaude(['plugin', ...args], { cwd, env: process.env }); } catch (e) { return resolve({ code: 1, output: e.message }); }
+    proc.stdin.end();
+    proc.stdout.on('data', d => { out += d; });
+    proc.stderr.on('data', d => { out += d; });
+    const timer = setTimeout(() => { out += '\n(Stopped: it took longer than 3 minutes.)'; try { proc.kill(); } catch {} }, 180000);
+    proc.on('error', e => { out += e.message; });
+    proc.on('close', code => { clearTimeout(timer); resolve({ code, output: out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').trim().slice(0, 20000) }); });
+  });
 }
 
 let versionCache = null;
@@ -972,6 +1012,17 @@ async function route(req, res) {
       limits[k] = ms && ms < now ? { status: 'allowed', utilization: 0, resetsAt: null, stale: true } : { ...v, resetsAt: ms };
     }
     return send(res, 200, { limits });
+  }
+
+  if (p === '/api/plugin' && m === 'POST') {
+    const body = await readBody(req);
+    const args = splitArgs(body.args || '');
+    if (!args.length) args.push('--help');
+    else if (!PLUGIN_CMDS.has(args[0])) return send(res, 400, { error: `Roundtable can't run "/plugin ${args[0]}". Try /plugin install, /plugin marketplace add, /plugin list, /plugin enable, /plugin disable or /plugin uninstall.` });
+    if (args.some(a => /[%"\x00-\x1f]/.test(a))) return send(res, 400, { error: 'That command has characters Roundtable can\'t pass along safely (like % or quotes).' });
+    const cwd = typeof body.cwd === 'string' && body.cwd && fs.existsSync(localPath(body.cwd)) ? localPath(body.cwd) : os.homedir();
+    const r = await runPluginCommand(args, cwd);
+    return send(res, 200, { ok: r.code === 0, output: r.output || (r.code === 0 ? 'Done.' : 'It didn\'t work, and Claude Code gave no reason.') });
   }
 
   if (p === '/api/commands' && m === 'GET') {
@@ -1118,7 +1169,8 @@ async function route(req, res) {
       if (typeof body.description === 'string') pr.description = body.description.slice(0, 1000);
       if (typeof body.instructions === 'string') pr.instructions = body.instructions.slice(0, 50000);
       if (typeof body.memoryEnabled === 'boolean') pr.memoryEnabled = body.memoryEnabled;
-      if (typeof body.cwd === 'string' && body.cwd.trim() && pr.kind !== 'chat') {
+      if (typeof body.group === 'string') { const g = body.group.trim().slice(0, 60); if (g) pr.group = g; else delete pr.group; }
+      if (typeof body.cwd === 'string' && body.cwd.trim()) {
         let cwd = body.cwd.trim(); if (cwd.startsWith('~')) cwd = path.join(os.homedir(), cwd.slice(1));
         try { if (!fs.statSync(cwd).isDirectory()) throw 0; } catch { return send(res, 400, { error: `Folder not found: ${cwd}` }); }
         pr.cwd = path.resolve(cwd);
@@ -1256,7 +1308,13 @@ async function route(req, res) {
     } else if (body.projectId && ID_RE.test(body.projectId)) {
       project = await getProject(body.projectId);
       if (!project) return send(res, 404, { error: 'Project not found' });
-      if (project.kind === 'chat') return send(res, 400, { error: 'This is a chat project — pick Claude or another model instead of Claude Code' });
+      // a chat project gets a folder of its own the first time Claude Code is used in it
+      if (!project.cwd && store.projects[project.id]) {
+        let dir = path.join(os.homedir(), 'Claude Projects', safeName(project.name));
+        for (let i = 2; fs.existsSync(dir) && !Object.values(store.projects).every(pr => !pr.cwd || path.resolve(pr.cwd) !== path.resolve(dir)); i++) dir = path.join(os.homedir(), 'Claude Projects', `${safeName(project.name)} (${i})`);
+        store.projects[project.id].cwd = project.cwd = dir;
+        saveProjects();
+      }
       cwd = project.cwd;
       // a project folder from another computer: same place under this computer's user folder
       if (!fs.existsSync(cwd)) { const t = translateHome(cwd); if (t) cwd = t; }
@@ -1264,7 +1322,7 @@ async function route(req, res) {
     }
     else {
       // a new chat in a folder that belongs to a project joins that project
-      const owner = Object.values(store.projects).filter(pr => pr.kind !== 'chat' && pr.cwd && path.resolve(pr.cwd) === path.resolve(cwd)).sort((a, b) => (a.created || '').localeCompare(b.created || ''))[0];
+      const owner = Object.values(store.projects).filter(pr => pr.cwd && path.resolve(pr.cwd) === path.resolve(cwd)).sort((a, b) => (a.created || '').localeCompare(b.created || ''))[0];
       if (owner) project = owner;
     }
     // folder-only projects with nothing set up yet don't need any shared context
